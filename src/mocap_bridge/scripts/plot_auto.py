@@ -107,12 +107,13 @@ def main():
     meas_y_m = aligned_df["y"].values
     meas_z_m = aligned_df["z"].values
 
-    offset_x = 100
-    offset_y = -25
-    offset_z = 8
     offset_x = 159.574
     offset_y = 51.985
     offset_z = -51.035
+
+    offset_x = 84.029
+    offset_y = 29.516
+    offset_z = -21.799
 
     P_local = np.vstack([-meas_x_m * 1000.0 + offset_x, 
                          -meas_y_m * 1000.0 + offset_y, 
