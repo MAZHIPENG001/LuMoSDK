@@ -276,9 +276,6 @@ struct LusterMocapData
 	// MarkerSet
 	std::vector<LST_MARKER_SET> FrameMarkerSet;
 
-	// ForcePlate Data
-	LST_FORCEPLATE_DATA ForcePlateData;
-
 	// TimeCode Data
 	LST_TIMECODE_DATA TimeCode;
 	
@@ -286,6 +283,9 @@ struct LusterMocapData
 	LST_ELECTROMYOGRAPHY_DATA ElectromyographyData;
 	
 	std::vector<LST_CUSTOM_SKELETON> FrameCustomSkeleton;
+
+	// New ForcePlate
+	std::map<int, LST_FORCEPLATE_DATA> FrameNewForcePlate;
 	LusterMocapData()
 	{
 		FrameID = 0;
@@ -298,6 +298,7 @@ struct LusterMocapData
 		FrameMarkerSet.clear();
 		ElectromyographyData.EmgData.clear();
 		FrameCustomSkeleton.clear();
+		FrameNewForcePlate.clear();
 	}
 	LusterMocapData(const std::string& data) { Parse(data); }
 	

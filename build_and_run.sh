@@ -10,6 +10,8 @@ g++ FZMotion_Receive_Sample.cpp \
     -Wl,-rpath,'$ORIGIN/lib' \
     -Wl,--no-as-needed \
     -lLuMoSDK \
+    -lprotobuf \
+    -lzmq \
     -lpthread \
     -o FZMotion_Receive_Sample
 
