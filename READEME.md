@@ -26,7 +26,7 @@ export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
 ## 1.2 相机数据作为ros话题发布
 ```bash
 cd ~/GithubDoc/ultralytics/my_model
-python3 /home/ma/GithubDoc/ultralytics/my_model/eval_ros.py
+python3 ~/GithubDoc/ultralytics/my_model/eval_ros.py
 ```
 ## 1.3 消息订阅
 ```bash
@@ -47,6 +47,6 @@ python3 data_save.py
 ```
 ## 1.4 绘图
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto.py --dir ***
-python3 /home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto.py
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto_calib.py --dir ***
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto_calib.py
 ```

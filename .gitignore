@@ -23,6 +23,8 @@ __pycache__/
 
 # 测试数据
 src/mocap_bridge/scripts/data/
+src/mocap_bridge/scripts/detection/BALL_data
+src/mocap_bridge/scripts/detection/output
 
 # 系统文件
 .DS_Store
