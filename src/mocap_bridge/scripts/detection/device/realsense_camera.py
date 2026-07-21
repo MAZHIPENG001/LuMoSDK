@@ -2,6 +2,7 @@ import pyrealsense2 as rs
 import numpy as np
 import cv2
 import threading
+import time
 
 class RealSenseCamera:
     def __init__(self, width=640, height=480, fps=60, serial_number=None):
@@ -50,10 +51,10 @@ class RealSenseCamera:
         self.stopped = False
         self.latest_color_frame = None
         self.latest_depth_frame = None
+        self.latest_capture_time_ns = None
         self.last_processed_frame_num = -1
 
     def start(self):
-        import time
         """启动相机"""
         try:
             # self.profile = self.pipeline.start(self.config)
@@ -162,9 +163,13 @@ class RealSenseCamera:
                 depth_frame.keep()
 
                 # 加锁更新最新帧
+                # 使用系统时钟记录这一对对齐帧到达主机的时刻。该时钟与默认
+                # ROS system time 同源，便于和动捕发布端的接收时间进行对齐。
+                capture_time_ns = time.time_ns()
                 with self.lock:
                     self.latest_color_frame = color_frame
                     self.latest_depth_frame = depth_frame
+                    self.latest_capture_time_ns = capture_time_ns
 
             except Exception as e:
                 if not self.stopped:
@@ -174,21 +179,38 @@ class RealSenseCamera:
         """仅从内存中返回最新帧，不阻塞"""
         with self.lock:
             return self.latest_color_frame, self.latest_depth_frame
-    def get_images(self):
+
+    def get_frame_bundle(self):
+        """原子地返回同一组彩色帧、对齐深度帧和主机采集时间。"""
+        with self.lock:
+            return (
+                self.latest_color_frame,
+                self.latest_depth_frame,
+                self.latest_capture_time_ns,
+            )
+
+    def get_images(self, return_metadata=False):
         """
         获取对齐后的图像数组
+        参数:
+            return_metadata: 为 True 时额外返回与图像严格对应的深度帧、
+                深度图内参和主机采集时间。默认 False 以兼容现有调用。
         返回:
             color_image: 彩色图像 (BGR格式)
             depth_image: 深度图像 (16位)
-            # colored_depth: 彩色化的深度图像
+            metadata（可选）: depth_frame、depth_intrinsics、capture_time_ns
         """
-        color_frame, depth_frame = self.get_frames()
+        color_frame, depth_frame, capture_time_ns = self.get_frame_bundle()
 
         if color_frame is None or depth_frame is None:
+            if return_metadata:
+                return None, None, None
             return None, None
 
         current_frame_num = color_frame.get_frame_number()
         if self.last_processed_frame_num == current_frame_num:
+            if return_metadata:
+                return None, None, None
             return None, None
         self.last_processed_frame_num = current_frame_num
 
@@ -196,44 +218,83 @@ class RealSenseCamera:
         color_image = np.asanyarray(color_frame.get_data())
         depth_image = np.asanyarray(depth_frame.get_data())
 
-        # # 彩色化深度图
-        # colored_depth = np.asanyarray(self.colorizer.colorize(depth_frame).get_data())
+        if return_metadata:
+            # 深度已通过 rs.align 对齐到彩色流，必须使用当前“对齐后深度帧”
+            # 自身携带的内参，不能再使用原始 depth stream 的内参。
+            depth_intrinsics = (
+                depth_frame.profile.as_video_stream_profile().get_intrinsics()
+            )
+            metadata = {
+                'depth_frame': depth_frame,
+                'depth_intrinsics': depth_intrinsics,
+                'capture_time_ns': capture_time_ns,
+            }
+            return color_image, depth_image, metadata
 
         return color_image, depth_image
 
-    def get_real_position(self, u, v, window_size=5):
+    def get_real_position(
+        self,
+        u,
+        v,
+        window_size=9,
+        depth_frame=None,
+        intrinsics=None,
+        mask=None,
+    ):
         """
-        获取指定像素点附近的有效深度值，并转换为真实坐标
+        获取指定像素点附近的有效深度值，并转换为真实坐标。
+
+        depth_frame 应传入产生该像素坐标的彩色图对应的对齐深度帧，避免
+        YOLO 推理期间后台线程更新深度后发生跨帧取值。
         """
-        _, depth_frame = self.get_frames()
+        if depth_frame is None:
+            _, depth_frame = self.get_frames()
         if depth_frame is None:
             return None, None, None
 
-        # --- 改进：区域采样 ---
-        # 截取中心点周围 window_size x window_size 的小窗口
+        # 在目标掩码内截取中心点附近的局部窗口。球面中心附近的深度最适合
+        # 后续沿视线方向进行半径补偿，同时可以避免窗口混入背景/地面。
         half_w = window_size // 2
         depths = []
 
-        # 遍历周边像素
-        for i in range(-half_w, half_w + 1):
-            for j in range(-half_w, half_w + 1):
-                # 确保坐标没有越界
-                if 0 <= u + i < self.width and 0 <= v + j < self.height:
-                    d = depth_frame.get_distance(u + i, v + j)
-                    if d > 0.05 and d < 10.0:  # 过滤掉 0 或者不合理的极端值
-                        depths.append(d)
+        for dy in range(-half_w, half_w + 1):
+            for dx in range(-half_w, half_w + 1):
+                px = u + dx
+                py = v + dy
+                if not (0 <= px < self.width and 0 <= py < self.height):
+                    continue
+                if mask is not None and not mask[py, px]:
+                    continue
+                d = depth_frame.get_distance(px, py)
+                if 0.05 < d < 10.0:
+                    depths.append(d)
 
         # 如果这个区域内找不到任何有效深度
         if not depths:
             print(f"\33[91m深度无效，像素区域 ({u}, {v}) 无可用深度\33[0m")
             return None, None, None
 
-        # 取这批有效深度值的中位数
-        median_depth = np.median(depths)
+        # 先用 MAD 剔除飞点，再取中位数。与均值相比，中位数对 RealSense
+        # 在球面边缘产生的空洞、背景穿透和离群深度更稳定。
+        depths = np.asarray(depths, dtype=np.float64)
+        depth_median = np.median(depths)
+        mad = np.median(np.abs(depths - depth_median))
+        if mad > 1e-6:
+            robust_sigma = 1.4826 * mad
+            inliers = depths[np.abs(depths - depth_median) <= 2.5 * robust_sigma]
+            if len(inliers) >= max(5, len(depths) // 3):
+                depths = inliers
+        median_depth = float(np.median(depths))
 
         # 用中位数深度反算真实 3D 坐标
-        camera_coordinate = rs.rs2_deproject_pixel_to_point(self.depth_intrinsics, [u, v], median_depth)
-        # camera_coordinate = rs.rs2_deproject_pixel_to_point(self.color_intrinsics, [u, v], median_depth)
+        if intrinsics is None:
+            intrinsics = (
+                depth_frame.profile.as_video_stream_profile().get_intrinsics()
+            )
+        camera_coordinate = rs.rs2_deproject_pixel_to_point(
+            intrinsics, [u, v], median_depth
+        )
         # print(f"\033[1;93m像素: ({u}, {v}) -> 真实坐标 (米): X={camera_coordinate[0]:.3f}, Y={camera_coordinate[1]:.3f}, Z={camera_coordinate[2]:.3f}\033[0m")
         return camera_coordinate[0], camera_coordinate[1], camera_coordinate[2]
     def get_point_cloud(self, depth_frame=None):
@@ -283,6 +344,9 @@ class RealSenseCamera:
                                      [0, c_fy, c_cy],
                                      [0, 0, 1]])
         return intrinsic_matrix
+    def get_color_distortion_coeffs(self):
+        """返回 OpenCV 顺序的彩色相机畸变系数 [k1, k2, p1, p2, k3]。"""
+        return np.asarray(self.color_intrinsics.coeffs, dtype=np.float64).reshape(1, 5)
     def get_depth_intrinsics(self):
         d_fx = self.depth_intrinsics.fx
         d_fy = self.depth_intrinsics.fy

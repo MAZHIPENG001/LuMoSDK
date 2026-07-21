@@ -2,6 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PointStamped
+from builtin_interfaces.msg import Time as TimeMsg
 import cv2
 from ultralytics import YOLO
 from device.realsense_camera import RealSenseCamera
@@ -83,6 +84,60 @@ class KalmanFilter3D:
 
         return self.x[:3]
 
+
+class OneEuroFilter1D:
+    """静止时抑制深度噪声、运动时自动提高响应速度的一维滤波器。"""
+
+    def __init__(self, min_cutoff=2.0, beta=5.0, derivative_cutoff=1.0):
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.derivative_cutoff = derivative_cutoff
+        self.reset()
+
+    def reset(self):
+        self.last_time = None
+        self.last_raw = None
+        self.filtered = None
+        self.filtered_derivative = 0.0
+
+    @staticmethod
+    def smoothing_factor(dt, cutoff):
+        value = 2.0 * np.pi * cutoff * dt
+        return value / (value + 1.0)
+
+    @staticmethod
+    def smooth(alpha, value, previous):
+        return alpha * value + (1.0 - alpha) * previous
+
+    def filter(self, value, timestamp_sec):
+        if self.last_time is None:
+            self.last_time = timestamp_sec
+            self.last_raw = value
+            self.filtered = value
+            return value
+
+        dt = timestamp_sec - self.last_time
+        # 检测中断后不要用陈旧状态拉回新测量。
+        if dt <= 0.0 or dt > 0.25:
+            self.reset()
+            return self.filter(value, timestamp_sec)
+        dt = float(np.clip(dt, 1.0 / 240.0, 0.1))
+
+        derivative = (value - self.last_raw) / dt
+        derivative_alpha = self.smoothing_factor(
+            dt, self.derivative_cutoff
+        )
+        self.filtered_derivative = self.smooth(
+            derivative_alpha, derivative, self.filtered_derivative
+        )
+
+        cutoff = self.min_cutoff + self.beta * abs(self.filtered_derivative)
+        value_alpha = self.smoothing_factor(dt, cutoff)
+        self.filtered = self.smooth(value_alpha, value, self.filtered)
+        self.last_time = timestamp_sec
+        self.last_raw = value
+        return self.filtered
+
 def ball_center(mask_data):
     M = cv2.moments(mask_data.astype(np.uint8))
     if M["m00"] > 0:
@@ -107,10 +162,12 @@ class BallPublisher(Node):
         super().__init__('ball_publisher')
         # 创建两个发布者：表面点与球心
         self.surf_pub = self.create_publisher(PointStamped, '/ball_surface', 10)
+        self.raw_center_pub = self.create_publisher(
+            PointStamped, '/ball_center_raw', 10
+        )
         self.center_pub = self.create_publisher(PointStamped, '/ball_center', 10)
-
         # 加载模型
-        model_path = "./model/red_ball/yolo26l-seg/best.engine"
+        model_path = "./model/ball/yolo26l-seg/best.engine"
         self.get_logger().info(f"加载模型: {model_path}")
         self.model = YOLO(model_path,task='segment')
 
@@ -128,15 +185,28 @@ class BallPublisher(Node):
         self.ball_radius = 0.115
 
         self.kf = KalmanFilter3D(dt=1.0 / 60.0)
+        self.z_filter = OneEuroFilter1D(
+            min_cutoff=2.0, beta=5.0, derivative_cutoff=1.0
+        )
 
         # 创建定时器（ * Hz 处理）
         self.timer = self.create_timer(1/60, self.process_frame)
 
     def process_frame(self):
-        capture_time = self.get_clock().now().to_msg()
-        color_image, depth_image = self.camera.get_images()
+        color_image, depth_image, frame_metadata = self.camera.get_images(
+            return_metadata=True
+        )
         if color_image is None:
             return
+
+        capture_time_ns = frame_metadata['capture_time_ns']
+        if capture_time_ns is None:
+            capture_time = self.get_clock().now().to_msg()
+        else:
+            capture_time = TimeMsg(
+                sec=int(capture_time_ns // 1_000_000_000),
+                nanosec=int(capture_time_ns % 1_000_000_000),
+            )
         # YOLO 推理
         # t0=time.time()
         results = self.model.predict(source=color_image, conf=0.5, verbose=False, retina_masks=True)
@@ -168,20 +238,46 @@ class BallPublisher(Node):
                 # surface_z = np.percentile(valid_depths, 10)
                 # # 获取 3D 坐标
                 # real_x, real_y, real_z = self.camera.deproject_to_3d(u, v, surface_z)
-                real_x, real_y, real_z = self.camera.get_real_position(u, v, window_size=5)
+                real_x, real_y, real_z = self.camera.get_real_position(
+                    u,
+                    v,
+                    window_size=9,
+                    depth_frame=frame_metadata['depth_frame'],
+                    intrinsics=frame_metadata['depth_intrinsics'],
+                    mask=mask_data,
+                )
                 # 获取 3D 坐标
                 # real_x, real_y, real_z = self.camera.get_real_position(u,v)
                 if real_z is not None:
                     # 表面点
                     surf_msg = PointStamped()
                     surf_msg.header.stamp = capture_time
-                    surf_msg.header.frame_id = "camera_link"   # 坐标系名称
+                    surf_msg.header.frame_id = "camera_color_optical_frame"
                     surf_msg.point.x, surf_msg.point.y, surf_msg.point.z = real_x, real_y, real_z
                     self.surf_pub.publish(surf_msg)
 
 
                     # 球心
-                    center_x, center_y, center_z = compensate_ball_radius(real_x, real_y, real_z, self.ball_radius)
+                    raw_center_x, raw_center_y, raw_center_z = compensate_ball_radius(
+                        real_x, real_y, real_z, self.ball_radius
+                    )
+
+                    raw_center_msg = PointStamped()
+                    raw_center_msg.header.stamp = capture_time
+                    raw_center_msg.header.frame_id = "camera_color_optical_frame"
+                    raw_center_msg.point.x = raw_center_x
+                    raw_center_msg.point.y = raw_center_y
+                    raw_center_msg.point.z = raw_center_z
+                    self.raw_center_pub.publish(raw_center_msg)
+
+                    capture_time_sec = (
+                        capture_time.sec + capture_time.nanosec * 1e-9
+                    )
+                    center_x = raw_center_x
+                    center_y = raw_center_y
+                    center_z = self.z_filter.filter(
+                        raw_center_z, capture_time_sec
+                    )
                     # raw_center_x, raw_center_y, raw_center_z = compensate_ball_radius(real_x, real_y, real_z, self.ball_radius)
                     # self.kf.predict()
                     # z_measurement = np.array([raw_center_x, raw_center_y, raw_center_z])
@@ -190,7 +286,7 @@ class BallPublisher(Node):
 
                     center_msg = PointStamped()
                     center_msg.header.stamp = capture_time
-                    center_msg.header.frame_id = "camera_link"
+                    center_msg.header.frame_id = "camera_color_optical_frame"
                     center_msg.point.x, center_msg.point.y, center_msg.point.z = center_x, center_y, center_z
                     self.center_pub.publish(center_msg)
 

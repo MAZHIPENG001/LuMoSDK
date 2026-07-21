@@ -50,15 +50,15 @@ class MultiSubscriber(Node):
                     )
                 else:
                     self.get_logger().warn("[动捕] 相机追踪丢失")
-            # box刚体（Rigid ID=5）
+            # 无反光贴纸红球的刚体球心（Rigid ID=5）
             if rb.rigid_id == 5:
                 if rb.is_track:
                     self.get_logger().info(
-                        f"[动捕] box位姿: X={rb.x:.3f}, Y={rb.y:.3f}, Z={rb.z:.3f}  "
+                        f"[动捕] 红球球心: X={rb.x:.3f}, Y={rb.y:.3f}, Z={rb.z:.3f}  "
                         f"四元数: QX={rb.qx:.3f}, QY={rb.qy:.3f}, QZ={rb.qz:.3f}, QW={rb.qw:.3f}"
                     )
                 else:
-                    self.get_logger().warn("[动捕] 相机追踪丢失")
+                    self.get_logger().warn("[动捕] 红球刚体追踪丢失")
 
     def surface_callback(self, msg):
         """处理视觉表面点"""

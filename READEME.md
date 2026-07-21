@@ -25,7 +25,7 @@ export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
 ```
 ## 1.2 相机数据作为ros话题发布
 ```bash
-cd ~/GithubDoc/ultralytics/my_model
+cd ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/
 python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/eval_ros.py
 ```
 ## 1.3 消息订阅
@@ -34,16 +34,15 @@ python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/eval_ros.py
 cd ~/GithubDoc/LuMoSDK
 source install/setup.bash
 export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
-cd ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/
-python3 mocap_subscriber.py
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/mocap_subscriber.py
+
 ```
 ```bash
 # 数据保存
 cd ~/GithubDoc/LuMoSDK
 source install/setup.bash
 export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
-cd ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/
-python3 data_save.py
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data_save.py
 ```
 ## 1.4 绘图
 ```bash

@@ -27,13 +27,14 @@ class HandEyeCalibrator(Node):
         # 缓存最新一帧的数据，用于手动触发保存
         self.latest_mocap_pose = None
         self.latest_aruco_pose = None
+        self.max_pair_delta_sec = 0.05
 
         # 订阅动捕话题 (对应相机刚体 rigid_id == 4)[cite: 1]
         self.mocap_sub = self.create_subscription(
             MocapData,
             '/mocap_data',
             self.mocap_callback,
-            10
+            50
         )
 
         # 订阅 ArUco 姿态话题[cite: 1]
@@ -41,7 +42,7 @@ class HandEyeCalibrator(Node):
             PoseStamped,
             '/aruco_pose',
             self.aruco_callback,
-            10
+            50
         )
 
         self.get_logger().info("手眼标定节点已启动。[cite: 1]")
@@ -52,15 +53,21 @@ class HandEyeCalibrator(Node):
         self.key_thread.start()
 
     def mocap_callback(self, msg):
-        # 提取 rigid_id == 4 的相机刚体位姿[cite: 1]
+        stamp = msg.header.stamp
+        stamp_sec = stamp.sec + stamp.nanosec * 1e-9
+        if stamp_sec == 0.0:
+            stamp_sec = self.get_clock().now().nanoseconds * 1e-9
+
+        # 提取 rigid_id == 4 的相机刚体位姿
         for rb in msg.rigid_bodies:
             if rb.rigid_id == 4 and rb.is_track:
-                self.latest_mocap_pose = rb
+                self.latest_mocap_pose = (rb, stamp_sec)
                 break
 
     def aruco_callback(self, msg):
-        # 更新最新的 ArUco 姿态[cite: 1]
-        self.latest_aruco_pose = msg.pose
+        stamp = msg.header.stamp
+        stamp_sec = stamp.sec + stamp.nanosec * 1e-9
+        self.latest_aruco_pose = (msg.pose, stamp_sec)
 
     def keyboard_loop(self):
         old_settings = termios.tcgetattr(sys.stdin)
@@ -82,8 +89,15 @@ class HandEyeCalibrator(Node):
             self.get_logger().warn("数据未对齐或缺失，无法保存！请确保相机在动捕视野内且拍到了 ArUco。[cite: 1]")
             return
 
-        m_pose = self.latest_mocap_pose
-        a_pose = self.latest_aruco_pose
+        m_pose, mocap_time = self.latest_mocap_pose
+        a_pose, aruco_time = self.latest_aruco_pose
+        pair_delta = abs(mocap_time - aruco_time)
+        if pair_delta > self.max_pair_delta_sec:
+            self.get_logger().warn(
+                f"位姿对时间差 {pair_delta * 1000.0:.1f} ms，超过 "
+                f"{self.max_pair_delta_sec * 1000.0:.0f} ms，未保存。"
+            )
+            return
 
         # 1. 处理动捕数据 (Gripper to Base)[cite: 1]
         r_mocap = R.from_quat([m_pose.qx, m_pose.qy, m_pose.qz, m_pose.qw]).as_matrix()
@@ -108,7 +122,8 @@ class HandEyeCalibrator(Node):
         self.t_target2cam.append(t_cam)
 
         self.get_logger().info(
-            f"✅ 成功保存第 {len(self.R_gripper2base)} 组数据！")
+            f"✅ 成功保存第 {len(self.R_gripper2base)} 组数据，"
+            f"时间差 {pair_delta * 1000.0:.1f} ms")
 
         # 清空缓存，防止在同一位置误触多次按键
         self.latest_mocap_pose = None
@@ -146,6 +161,11 @@ class HandEyeCalibrator(Node):
                 )
 
                 quat_cam2gripper = R.from_matrix(R_cam2gripper).as_quat()
+                translation_rmse_mm, rotation_rmse_deg = (
+                    self.calculate_static_target_residual(
+                        R_cam2gripper, t_cam2gripper
+                    )
+                )
 
                 print(f"# 🟢 【算法: {name}】")
                 print(f"# 平移向量 (X, Y, Z) 单位:米[cite: 1]")
@@ -155,6 +175,11 @@ class HandEyeCalibrator(Node):
                 print(f"# 旋转四元数 (x, y, z, w):[cite: 1]")
                 print(
                     f"calib_qx, calib_qy, calib_qz, calib_qw = {quat_cam2gripper[0]:.4f}, {quat_cam2gripper[1]:.4f}, {quat_cam2gripper[2]:.4f}, {quat_cam2gripper[3]:.4f}")
+                print(
+                    f"# 固定标定板世界位姿残差: translation RMSE = "
+                    f"{translation_rmse_mm:.3f} mm, rotation RMSE = "
+                    f"{rotation_rmse_deg:.3f} deg"
+                )
                 print("-" * 55)
 
             except cv2.error as e:
@@ -163,6 +188,42 @@ class HandEyeCalibrator(Node):
                 print(f"错误信息: {e}")
                 print("-" * 55)
         print("=" * 55)
+
+    def calculate_static_target_residual(
+        self, R_cam2gripper, t_cam2gripper
+    ):
+        """计算固定标定板在动捕世界中的位姿离散程度。"""
+        target_positions = []
+        target_rotations = []
+
+        for R_gripper2base, t_gripper2base, R_target2cam, t_target2cam in zip(
+            self.R_gripper2base,
+            self.t_gripper2base,
+            self.R_target2cam,
+            self.t_target2cam,
+        ):
+            R_target2base = (
+                R_gripper2base @ R_cam2gripper @ R_target2cam
+            )
+            t_target2base = R_gripper2base @ (
+                R_cam2gripper @ t_target2cam + t_cam2gripper
+            ) + t_gripper2base
+            target_positions.append(t_target2base.reshape(3))
+            target_rotations.append(R_target2base)
+
+        target_positions = np.asarray(target_positions)
+        centered = target_positions - target_positions.mean(axis=0)
+        translation_rmse_mm = (
+            np.sqrt(np.mean(np.sum(centered ** 2, axis=1))) * 1000.0
+        )
+
+        rotations = R.from_matrix(np.asarray(target_rotations))
+        mean_rotation = rotations.mean()
+        angular_errors = (mean_rotation.inv() * rotations).magnitude()
+        rotation_rmse_deg = np.degrees(
+            np.sqrt(np.mean(angular_errors ** 2))
+        )
+        return translation_rmse_mm, rotation_rmse_deg
 
 
 def main(args=None):

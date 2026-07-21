@@ -48,6 +48,10 @@ private:
                 if (!rclcpp::ok()) break;
 
                 auto msg = mocap_bridge::msg::MocapData();
+                // 使用本机 ROS 时钟记录动捕帧到达发布节点的时刻。SDK 的
+                // TimeStamp 保留在 timestamp 字段中，供排查源端丢帧使用。
+                msg.header.stamp = this->get_clock()->now();
+                msg.header.frame_id = "mocap_world";
                 msg.frame_id = mocap_data.FrameID;
                 msg.timestamp = mocap_data.TimeStamp;
 

@@ -2,6 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped
+from builtin_interfaces.msg import Time as TimeMsg
 import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
@@ -36,7 +37,7 @@ class CharucoDetectorNode(Node):
 
         # 获取相机内参矩阵
         self.camera_matrix = self.camera.get_color_intrinsic_matrix()
-        self.dist_coeffs = np.zeros((5, 1))
+        self.dist_coeffs = self.camera.get_color_distortion_coeffs()
 
         # 1. 初始化 ArUco 字典
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
@@ -65,7 +66,9 @@ class CharucoDetectorNode(Node):
         self.get_logger().info("ChArUco 检测节点已启动，正在发布 /aruco_pose")
 
     def process_frame(self):
-        color_image, _ = self.camera.get_images()
+        color_image, _, frame_metadata = self.camera.get_images(
+            return_metadata=True
+        )
         if color_image is None:
             return
 
@@ -100,16 +103,24 @@ class CharucoDetectorNode(Node):
                 cv2.drawFrameAxes(color_image, self.camera_matrix, self.dist_coeffs, rvec, tvec, self.square_length * 2)
 
                 # 发布位姿
-                self.publish_pose(rvec, tvec)
+                self.publish_pose(
+                    rvec, tvec, frame_metadata['capture_time_ns']
+                )
         else:
             pass
         cv2.imshow('ChArUco Detection', color_image)
         cv2.waitKey(1)
 
-    def publish_pose(self, rvec, tvec):
+    def publish_pose(self, rvec, tvec, capture_time_ns):
         # print(f"\33[92mtvec:{tvec}\33[0m")
         msg = PoseStamped()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        if capture_time_ns is None:
+            msg.header.stamp = self.get_clock().now().to_msg()
+        else:
+            msg.header.stamp = TimeMsg(
+                sec=int(capture_time_ns // 1_000_000_000),
+                nanosec=int(capture_time_ns % 1_000_000_000),
+            )
         msg.header.frame_id = 'camera_color_optical_frame'
 
         msg.pose.position.x = float(tvec[0][0])
