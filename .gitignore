@@ -25,6 +25,7 @@ __pycache__/
 src/mocap_bridge/scripts/data/
 src/mocap_bridge/scripts/detection/BALL_data
 src/mocap_bridge/scripts/detection/output
+src/mocap_bridge/scripts/detection/pretrained_model
 
 # 系统文件
 .DS_Store
