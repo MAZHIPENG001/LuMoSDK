@@ -25,9 +25,14 @@ __pycache__/
 src/mocap_bridge/scripts/data/
 src/mocap_bridge/scripts/detection/BALL_data
 src/mocap_bridge/scripts/detection/output
-# 模型
-src/mocap_bridge/scripts/detection/pretrained_model
-src/mocap_bridge/scripts/detection/model
+
+# 模型文件 (防止误提交 .pt 模型)
+src/mocap_bridge/scripts/detection/pretrained_model/
+src/mocap_bridge/scripts/detection/model/
+*.pt
+*.pth
+*.onnx
+
 # 系统文件
 .DS_Store
 *.swp
@@ -36,3 +41,17 @@ src/mocap_bridge/scripts/detection/model
 # 编辑器配置
 .vscode/
 .idea/
+
+# 动态链接库 (防止误提交 .so 文件)
+*.so
+*.so.*
+lib/
+src/mocap_bridge/sdk/lib_arm/
+
+# 压缩包与数据集
+*.zip
+*.tar.gz
+*.rar
+*.7z
+*.bag
+*.pcap
