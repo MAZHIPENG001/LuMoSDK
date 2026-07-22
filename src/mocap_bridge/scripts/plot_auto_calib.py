@@ -23,7 +23,19 @@ def get_latest_data_dir(base_dir):
         raise FileNotFoundError(f"在 {base_dir} 路径下未找到任何数据文件夹！")
     latest_dir = max(subdirs, key=os.path.basename)
     return latest_dir
+def set_axes_equal_3d(ax, points):
+    """将三维坐标轴设置为等比例，避免轨迹显示变形。"""
+    points = np.asarray(points, dtype=np.float64)
+    axis_min = points.min(axis=0)
+    axis_max = points.max(axis=0)
+    axis_center = (axis_min + axis_max) / 2.0
+    half_range = np.max(axis_max - axis_min) / 2.0
+    if half_range <= 0.0:
+        half_range = 1.0
 
+    ax.set_xlim(axis_center[0] - half_range, axis_center[0] + half_range)
+    ax.set_ylim(axis_center[1] - half_range, axis_center[1] + half_range)
+    ax.set_zlim(axis_center[2] - half_range, axis_center[2] + half_range)
 def main():
     # 配置参数解析
     base_dir = ("/home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data")
@@ -68,7 +80,7 @@ def main():
     center_df.sort_values("time", inplace=True)
     mocap_df.sort_values("time", inplace=True)
 
-    # 真值定义：Rigid 5 的平移就是无反光贴纸红球的球心；Rigid 4 是相机刚体。
+    # Rigid 5 是无反光贴纸红球的球心；Rigid 4 是相机刚体;marker_id 1 是标准球
     # ball_gt = mocap_df[(mocap_df["rigid_id"] == 5) & (mocap_df["is_track"] == 1)].dropna(axis=1, how="all")
     # gt_keys = ["rx", "ry", "rz"] 
     ball_gt = mocap_df[mocap_df['marker_id'] == 1].dropna(axis=1, how='all')
@@ -262,7 +274,32 @@ def main():
     axes[2].set_xlabel("Time (s)")
     fig.suptitle(f"Plot 2: Ground Truth vs Measurement [{dir_name}]", fontsize=12)
     plt.tight_layout()
-    
+
+    # 绘图3:动捕中rigid4位置
+    # fig3, axes3 = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+    # rigid4_xyz = [cam_T[:, 0], cam_T[:, 1], cam_T[:, 2]]
+    # coords_rigid4 = ["x", "y", "z"]
+    # colors_rigid4 = ["r", "g", "b"]
+
+    # for i, axis in enumerate(coords_rigid4):
+    #     axes3[i].plot(
+    #         relative_time,
+    #         rigid4_xyz[i],
+    #         label=f"Rigid 4 {axis.upper()}",
+    #         color=colors_rigid4[i],
+    #         alpha=0.8,
+    #     )
+    #     axes3[i].set_ylabel(f"World {axis.upper()} (mm)")
+    #     axes3[i].legend(loc="upper right")
+    #     axes3[i].grid(True)
+
+    # axes3[2].set_xlabel("Time (s)")
+    # fig3.suptitle(
+    #     f"Plot 3: Rigid 4 Position in World Frame [{dir_name}]",
+    #     fontsize=12,
+    # )
+    # fig3.tight_layout()
+
     # 绘图4:相机检测位置信息
     fig4, axes4 = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
     coords_raw = ["x", "y", "z"]

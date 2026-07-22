@@ -8,6 +8,7 @@ from ultralytics import YOLO
 from device.realsense_camera import RealSenseCamera
 import time
 from record.target_tracker import TargetTracker
+from sphere_fit import fit_fixed_radius_sphere
 import numpy as np
 # from device.zed_camera import ZEDCamera
 # import pyzed.sl as sl
@@ -183,6 +184,8 @@ class BallPublisher(Node):
         self.tracker = TargetTracker()
 
         self.ball_radius = 0.115
+        self.sphere_fit_failure_count = 0
+        self.latest_sphere_fit_rmse_mm = None
 
         self.kf = KalmanFilter3D(dt=1.0 / 60.0)
         self.z_filter = OneEuroFilter1D(
@@ -257,10 +260,54 @@ class BallPublisher(Node):
                     self.surf_pub.publish(surf_msg)
 
 
-                    # 球心
-                    raw_center_x, raw_center_y, raw_center_z = compensate_ball_radius(
+                    # 以原来的视线半径补偿结果作为球拟合初值和失败回退值。
+                    fallback_center = compensate_ball_radius(
                         real_x, real_y, real_z, self.ball_radius
                     )
+
+                    try:
+                        masked_points = self.camera.get_masked_point_cloud(
+                            depth_image=depth_image,
+                            mask=mask_data,
+                            intrinsics=frame_metadata['depth_intrinsics'],
+                            max_points=2500,
+                        )
+                        sphere_fit = fit_fixed_radius_sphere(
+                            masked_points,
+                            radius=self.ball_radius,
+                            initial_center=fallback_center,
+                            min_points=80,
+                            robust_scale_m=0.005,
+                        )
+                        if (
+                            sphere_fit.rmse_m > 0.015
+                            or sphere_fit.median_abs_residual_m > 0.010
+                            or sphere_fit.inlier_fraction < 0.35
+                        ):
+                            raise ValueError(
+                                "球拟合质量不足: "
+                                f"RMSE={sphere_fit.rmse_m * 1000.0:.1f}mm, "
+                                f"median={sphere_fit.median_abs_residual_m * 1000.0:.1f}mm, "
+                                f"inliers={sphere_fit.inlier_fraction:.1%}"
+                            )
+                        raw_center_x, raw_center_y, raw_center_z = (
+                            sphere_fit.center.tolist()
+                        )
+                        self.latest_sphere_fit_rmse_mm = (
+                            sphere_fit.rmse_m * 1000.0
+                        )
+                    except ValueError as error:
+                        # 深度缺失或遮挡严重时仍发布旧方法的结果，避免轨迹中断。
+                        raw_center_x, raw_center_y, raw_center_z = fallback_center
+                        self.latest_sphere_fit_rmse_mm = None
+                        self.sphere_fit_failure_count += 1
+                        if (
+                            self.sphere_fit_failure_count <= 3
+                            or self.sphere_fit_failure_count % 60 == 0
+                        ):
+                            self.get_logger().warn(
+                                f"球拟合失败，使用视线半径补偿回退值: {error}"
+                            )
 
                     raw_center_msg = PointStamped()
                     raw_center_msg.header.stamp = capture_time
@@ -299,6 +346,16 @@ class BallPublisher(Node):
                     cv2.circle(annotated, (u, v), 5, (0, 0, 255), -1)
                     cv2.putText(annotated, f"z: {real_z*1000:.6f}mm", (u-20, v-15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
                     cv2.putText(annotated, f"Center Z: {center_z * 1000:.6f}mm", (u-20, v+20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    if self.latest_sphere_fit_rmse_mm is not None:
+                        cv2.putText(
+                            annotated,
+                            f"Sphere fit RMSE: {self.latest_sphere_fit_rmse_mm:.2f}mm",
+                            (u-20, v+45),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.55,
+                            (0, 255, 255),
+                            2,
+                        )
                     cv2.imshow("Detection", annotated)
             else:
                 self.get_logger().warn("掩码内无有效深度点！")

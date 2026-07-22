@@ -13,6 +13,17 @@ different poses.
 
 The board defaults below intentionally match detection/calib/ChArUco.py:
 7 x 5 squares, 18.12 mm square length, 14.46 mm marker length, DICT_6X6_250.
+
+# usage:
+python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p rigid_id:=4 \
+  -p mocap_position_scale:=0.001 \
+  -p mocap_pose_direction:=rigid_to_world \
+  -p averaging_window_sec:=0.8 \
+  -p min_window_pairs:=30 \
+  -p min_charuco_corners:=18 \
+  -p max_reprojection_error_px:=0.5 \
+  -p max_pair_delta_sec:=0.015
 """
 
 from collections import deque

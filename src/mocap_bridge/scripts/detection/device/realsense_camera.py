@@ -297,6 +297,69 @@ class RealSenseCamera:
         )
         # print(f"\033[1;93m像素: ({u}, {v}) -> 真实坐标 (米): X={camera_coordinate[0]:.3f}, Y={camera_coordinate[1]:.3f}, Z={camera_coordinate[2]:.3f}\033[0m")
         return camera_coordinate[0], camera_coordinate[1], camera_coordinate[2]
+
+    def get_masked_point_cloud(
+        self,
+        depth_image,
+        mask,
+        intrinsics,
+        max_points=2500,
+        min_depth_m=0.05,
+        max_depth_m=10.0,
+    ):
+        """Deproject valid masked depth pixels into camera-frame 3D points.
+
+        The aligned depth image stores optical-axis Z depth.  For the common
+        zero-distortion aligned stream, vectorized pinhole deprojection keeps
+        sphere fitting fast enough for the detection loop.  A RealSense SDK
+        fallback handles streams with non-zero distortion coefficients.
+        """
+        if depth_image is None or mask is None or intrinsics is None:
+            return np.empty((0, 3), dtype=np.float64)
+
+        depth_image = np.asarray(depth_image)
+        mask = np.asarray(mask, dtype=bool)
+        if depth_image.shape[:2] != mask.shape[:2]:
+            raise ValueError(
+                f"depth/mask shape mismatch: {depth_image.shape} vs {mask.shape}"
+            )
+
+        depth_m = depth_image.astype(np.float64, copy=False) * self.depth_scale
+        valid = (
+            mask
+            & np.isfinite(depth_m)
+            & (depth_m > float(min_depth_m))
+            & (depth_m < float(max_depth_m))
+        )
+        rows, cols = np.nonzero(valid)
+        if len(rows) == 0:
+            return np.empty((0, 3), dtype=np.float64)
+
+        max_points = max(1, int(max_points))
+        if len(rows) > max_points:
+            selected = np.linspace(
+                0, len(rows) - 1, max_points, dtype=np.int64
+            )
+            rows = rows[selected]
+            cols = cols[selected]
+
+        z = depth_m[rows, cols]
+        coefficients = np.asarray(intrinsics.coeffs, dtype=np.float64)
+        if np.all(np.abs(coefficients) < 1e-12):
+            x = (cols.astype(np.float64) - intrinsics.ppx) * z / intrinsics.fx
+            y = (rows.astype(np.float64) - intrinsics.ppy) * z / intrinsics.fy
+            return np.column_stack((x, y, z))
+
+        points = [
+            rs.rs2_deproject_pixel_to_point(
+                intrinsics,
+                [float(col), float(row)],
+                float(depth),
+            )
+            for row, col, depth in zip(rows, cols, z)
+        ]
+        return np.asarray(points, dtype=np.float64).reshape(-1, 3)
+
     def get_point_cloud(self, depth_frame=None):
         """
         生成点云数据
