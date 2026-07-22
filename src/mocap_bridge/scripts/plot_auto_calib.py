@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation as R_scipy
 from scipy.spatial.transform import Slerp
+import json
 
 """
 python3 plot_auto.py --dir <your_dir>
@@ -28,6 +29,19 @@ def main():
     base_dir = ("/home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data")
     parser = argparse.ArgumentParser(description="动捕与视觉数据对齐与可视化工具")
     parser.add_argument("--dir",type=str,default=None,help="数据文件夹路径。",)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_handeye_file = os.path.join(
+        script_dir,
+        "detection",
+        "calib",
+        "handeye_calibration.json",
+    )
+    parser.add_argument(
+        "--handeye-calib",
+        type=str,
+        default=default_handeye_file,
+        help="手眼标定结果 handeye_calibration.json 路径",
+    )
     args = parser.parse_args()
 
     if args.dir:
@@ -118,37 +132,71 @@ def main():
 
     # 2. 【填入标定结果】输入你使用标定脚本跑出的四元数和平移向量
     # 标定出来的平移是米(m)，请乘以 1000 转换为毫米(mm)
+    # 读取手眼标定结果
+    handeye_path = os.path.abspath(os.path.expanduser(args.handeye_calib))
 
-    # calib_t_x_m = 0.0233
-    # calib_t_y_m = -0.0234
-    # calib_t_z_m = 0.0050
-    # calib_qx = 0.0343
-    # calib_qy = -0.0124
-    # calib_qz = 0.9993
-    # calib_qw = -0.0040
+    if not os.path.isfile(handeye_path):
+        raise FileNotFoundError(f"未找到手眼标定文件: {handeye_path}")
 
-    # calib_t_x_m = 0.08227543
-    # calib_t_y_m = -0.04309161
-    # calib_t_z_m = -0.02465399
-    # calib_qx = 0.01072157
-    # calib_qy = 0.00416869
-    # calib_qz = 0.99985549
-    # calib_qw = 0.01251645
+    with open(handeye_path, "r", encoding="utf-8") as f:
+        handeye_data = json.load(f)
 
-    calib_t_x_m = 0.055691880
-    calib_t_y_m = -0.068556418
-    calib_t_z_m = -0.019978876
-    calib_qx = 0.021324586
-    calib_qy = 0.006805712
-    calib_qz = 0.999679185
-    calib_qw = -0.011852046
+    rigid_id = handeye_data.get("rigid_id")
+    if rigid_id is not None and int(rigid_id) != 4:
+        raise ValueError(
+            f"标定文件对应 rigid_id={rigid_id}，"
+            "但 plot_auto_calib.py 当前使用的是 rigid_id=4"
+        )
 
-    t_calib = np.array([
-        calib_t_x_m * 1000.0,
-        calib_t_y_m * 1000.0,
-        calib_t_z_m * 1000.0,
-    ])
-    R_calib = R_scipy.from_quat([calib_qx, calib_qy, calib_qz, calib_qw]).as_matrix()
+    selected = handeye_data["selected"]
+
+    if selected.get("mocap_pose_direction") != "rigid_to_world":
+        raise ValueError(
+            "标定文件的动捕位姿方向不是 rigid_to_world，"
+            "不能直接用于当前坐标变换链"
+        )
+
+    # 单位：T_rigid_camera 的平移为米
+    T_rigid_camera = np.asarray(
+        selected["T_rigid_camera"],
+        dtype=np.float64,
+    )
+
+    if T_rigid_camera.shape != (4, 4):
+        raise ValueError(
+            f"T_rigid_camera 尺寸错误: {T_rigid_camera.shape}"
+        )
+
+    if not np.allclose(
+        T_rigid_camera[3],
+        [0.0, 0.0, 0.0, 1.0],
+        atol=1e-8,
+    ):
+        raise ValueError("T_rigid_camera 最后一行不是 [0, 0, 0, 1]")
+
+    R_calib = T_rigid_camera[:3, :3]
+
+    # plot_auto_calib.py 内部的动捕数据使用毫米
+    t_calib = T_rigid_camera[:3, 3] * 1000.0
+
+    if not np.allclose(
+        R_calib.T @ R_calib,
+        np.eye(3),
+        atol=1e-4,
+    ):
+        raise ValueError("T_rigid_camera 中的旋转矩阵不正交")
+
+    if not np.isclose(np.linalg.det(R_calib), 1.0, atol=1e-4):
+        raise ValueError("T_rigid_camera 中的旋转矩阵行列式不为 1")
+
+    print(f"-> 已加载手眼标定: {handeye_path}")
+    print(
+        f"   method={selected.get('method')}, "
+        f"translation RMSE={selected.get('translation_rmse_mm')} mm, "
+        f"rotation RMSE={selected.get('rotation_rmse_deg')} deg"
+    )
+    print("   T_rigid_camera =")
+    print(T_rigid_camera)
 
     # 3. 将相机坐标系点 -> 转换到相机刚体坐标系 (P_gripper = R_calib * P_cam + t_calib)
     # 利用矩阵乘法：(N,3) @ (3,3).T = (N,3)

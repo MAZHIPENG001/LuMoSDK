@@ -23,6 +23,11 @@ export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
 ```bash
 ./install/mocap_bridge/lib/mocap_bridge/mocap_publisher
 ```
+```bash
+cd ~/GithubDoc/LuMoSDK
+source install/setup.bash
+ros2 run mocap_bridge mocap_publisher
+```
 ## 1.2 相机数据作为ros话题发布
 ```bash
 cd ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/
