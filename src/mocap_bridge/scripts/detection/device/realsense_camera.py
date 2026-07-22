@@ -4,19 +4,8 @@ import cv2
 import threading
 import time
 
-
 class RealSenseCamera:
-    def __init__(
-        self,
-        width=640,
-        height=480,
-        fps=60,
-        serial_number=None,
-        color_exposure=None,
-        color_gain=None,
-        depth_exposure=None,
-        laser_power=None,
-    ):
+    def __init__(self, width=640, height=480, fps=60, serial_number=None):
         """
         初始化RealSense相机
         参数:
@@ -28,18 +17,14 @@ class RealSenseCamera:
         self.height = height
         self.fps = fps
         self.serial_number = serial_number
-        self.color_exposure = color_exposure
-        self.color_gain = color_gain
-        self.depth_exposure = depth_exposure
-        self.laser_power = laser_power
-
         # 创建管道和配置
         self.pipeline = rs.pipeline()
         self.config = rs.config()
         # 如果有指定序列号，则只连接该设备
         if serial_number:
             self.config.enable_device(serial_number)
-
+        else:
+            self.serial_number = rs.camera_info.serial_number
         # 配置流
         self.config.enable_stream(rs.stream.depth, width, height, rs.format.z16, fps)
         self.config.enable_stream(rs.stream.color, width, height, rs.format.bgr8, fps)
@@ -54,17 +39,16 @@ class RealSenseCamera:
         # 深度颜色化工具
         self.colorizer = rs.colorizer()
 
+        self.profile = self.pipeline.start(self.config)
+        self.depth_profile = rs.video_stream_profile(self.profile.get_stream(rs.stream.depth))
+        self.color_profile = rs.video_stream_profile(self.profile.get_stream(rs.stream.color))
+        self.depth_intrinsics = self.depth_profile.get_intrinsics()
+        self.color_intrinsics = self.color_profile.get_intrinsics()
+
         # 多线程
         self.lock = threading.Lock()
         self.thread = None
-        self.stopped = True
-        self.started = False
-        self.profile = None
-        self.depth_profile = None
-        self.color_profile = None
-        self.depth_intrinsics = None
-        self.color_intrinsics = None
-        self.depth_scale = None
+        self.stopped = False
         self.latest_color_frame = None
         self.latest_depth_frame = None
         self.latest_capture_time_ns = None
@@ -72,50 +56,39 @@ class RealSenseCamera:
 
     def start(self):
         """启动相机"""
-        if self.started:
-            return True
-
         try:
-            # pipeline 只在 start() 中启动，避免构造对象时即占用设备，也避免
-            # __init__ 与 start() 的生命周期不一致。
-            self.profile = self.pipeline.start(self.config)
-            self.started = True
-
-            self.depth_profile = rs.video_stream_profile(
-                self.profile.get_stream(rs.stream.depth)
-            )
-            self.color_profile = rs.video_stream_profile(
-                self.profile.get_stream(rs.stream.color)
-            )
-            self.depth_intrinsics = self.depth_profile.get_intrinsics()
-            self.color_intrinsics = self.color_profile.get_intrinsics()
-
-            device = self.profile.get_device()
-            self.serial_number = device.get_info(rs.camera_info.serial_number)
+            # self.profile = self.pipeline.start(self.config)
             print(f"\033[92m相机serial_number=={self.serial_number}   启动成功\033[0m")
 
             # 获取深度传感器和深度标尺
-            depth_sensor = device.first_depth_sensor()
+            depth_sensor = self.profile.get_device().first_depth_sensor()
             self.depth_scale = depth_sensor.get_depth_scale()
             print(f"\033[96m深度标尺: {self.depth_scale}\033[0m")
-            sensors = device.query_sensors()
+            sensors = self.profile.get_device().query_sensors()
             for sensor in sensors:
                 sensor_name = sensor.get_info(rs.camera_info.name)
+                # 1. 设置深度传感器 (Stereo Module)
                 if 'Stereo Module' in sensor_name:
-                    self._configure_manual_exposure(
-                        sensor, self.depth_exposure
-                    )
-                    self._set_option_if_requested(
-                        sensor, rs.option.laser_power, self.laser_power
-                    )
+                    # 关闭深度图自动曝光
+                    sensor.set_option(rs.option.enable_auto_exposure, 0)
+                    # 设置深度曝光时间 (单位通常为微秒，例如 5000 = 5毫秒)
+                    # 运动较快时建议设置在 3000 - 6000 之间
+                    sensor.set_option(rs.option.exposure, 5000)
+                    # 还可以稍微提高深度激光发射器(增益)功率来弥补曝光缩短带来的深度缺失
+                    if sensor.supports(rs.option.laser_power):
+                        sensor.set_option(rs.option.laser_power, 200)  # 默认通常是150，可调高到200-300
+                # 2. 设置彩色传感器 (RGB Camera)
                 elif 'RGB' in sensor_name:
-                    self._configure_manual_exposure(
-                        sensor, self.color_exposure
-                    )
-                    self._set_option_if_requested(
-                        sensor, rs.option.gain, self.color_gain
-                    )
+                    # 关闭彩色图自动曝光
+                    sensor.set_option(rs.option.enable_auto_exposure, 0)
+                    # 设置彩色曝光时间
+                    # 注意：部分 RealSense 型号 RGB 曝光单位是 1/10000 秒 (即 100 = 10毫秒)
+                    # 如果你使用的是 60fps[cite: 2]，每帧最大时间只有 16.6ms。建议设置在 80 左右 (8ms)
+                    sensor.set_option(rs.option.exposure, 80)
 
+                    # 曝光降低会导致图像变暗，需要提高增益 (Gain) 来补偿
+                    if sensor.supports(rs.option.gain):
+                        sensor.set_option(rs.option.gain, 64)
             # 相机内参
             c_fx, c_fy, c_cx, c_cy = self.get_color_intrinsics()
             d_fx, d_fy, d_cx, d_cy = self.get_depth_intrinsics()
@@ -144,48 +117,10 @@ class RealSenseCamera:
             time.sleep(0.5)
         except Exception as e:
             print(f"\033[91m相机启动失败: {e}\033[0m")
-            if self.started:
-                try:
-                    self.pipeline.stop()
-                except Exception:
-                    pass
-            self.started = False
-            self.profile = None
             return False
         return True
-
-    @staticmethod
-    def _set_option_if_requested(sensor, option, value):
-        """仅在用户显式给值且设备支持时设置选项。"""
-        if value is None:
-            return
-        if not sensor.supports(option):
-            print(f"\033[93m传感器不支持选项 {option}，已忽略。\033[0m")
-            return
-
-        option_range = sensor.get_option_range(option)
-        value = float(value)
-        if not option_range.min <= value <= option_range.max:
-            raise ValueError(
-                f"选项 {option}={value} 超出范围 "
-                f"[{option_range.min}, {option_range.max}]"
-            )
-        sensor.set_option(option, value)
-
-    def _configure_manual_exposure(self, sensor, exposure):
-        """给出 exposure 时关闭自动曝光；否则保持设备默认设置。"""
-        if exposure is None:
-            return
-        self._set_option_if_requested(
-            sensor, rs.option.enable_auto_exposure, 0
-        )
-        self._set_option_if_requested(sensor, rs.option.exposure, exposure)
-
     def stop(self):
         """停止相机"""
-        if not self.started:
-            return
-
         # 改变标志位，后台线程跳出 while 循环
         self.stopped = True
 
@@ -196,34 +131,19 @@ class RealSenseCamera:
         # 后台线程已退出,关闭相机管道
         try:
             self.pipeline.stop()
-        except Exception:
-            pass
-
-        with self.lock:
-            self.latest_color_frame = None
-            self.latest_depth_frame = None
-            self.latest_capture_time_ns = None
-        self.started = False
-        self.profile = None
+        except Exception as e:
+            pass  # 忽略重复关闭可能引发的错误
 
         print("相机已停止")
-
     def __enter__(self):
-        if not self.start():
-            raise RuntimeError("RealSense 相机启动失败")
+        self.start()
         return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.stop()
 
     def _update_frames(self):
         """后台独立线程：以相机原生帧率不断获取最新帧"""
         while not self.stopped:
             try:
-                # 使用超时，stop() 后线程可以及时退出。
-                frames = self.pipeline.wait_for_frames(timeout_ms=1000)
-                # 在耗时的对齐/滤波前记录主机收帧时刻。
-                capture_time_ns = time.time_ns()
+                frames = self.pipeline.wait_for_frames()
                 aligned_frames = self.align.process(frames)
 
                 color_frame = aligned_frames.get_color_frame()
@@ -245,6 +165,7 @@ class RealSenseCamera:
                 # 加锁更新最新帧
                 # 使用系统时钟记录这一对对齐帧到达主机的时刻。该时钟与默认
                 # ROS system time 同源，便于和动捕发布端的接收时间进行对齐。
+                capture_time_ns = time.time_ns()
                 with self.lock:
                     self.latest_color_frame = color_frame
                     self.latest_depth_frame = depth_frame
@@ -398,7 +319,7 @@ class RealSenseCamera:
         """
         已知像素坐标 (u, v) 和真实深度（米），利用内参反算 3D 坐标
         """
-        if depth_m <= 0 or self.color_intrinsics is None:
+        if depth_m <= 0 or not hasattr(self, 'color_intrinsics'):
             return None, None, None
 
         # 调用 realsense SDK 的反投影函数
@@ -411,8 +332,6 @@ class RealSenseCamera:
 
     def get_color_intrinsics(self):
         """获取相机内参"""
-        if self.color_intrinsics is None:
-            raise RuntimeError("相机尚未启动，无法获取彩色相机内参")
         c_fx = self.color_intrinsics.fx
         c_fy = self.color_intrinsics.fy
         c_cx = self.color_intrinsics.ppx
@@ -426,31 +345,9 @@ class RealSenseCamera:
                                      [0, 0, 1]])
         return intrinsic_matrix
     def get_color_distortion_coeffs(self):
-        """返回 OpenCV 顺序的彩色相机畸变系数。
-
-        OpenCV 的 solvePnP 使用正向 Brown-Conrady 模型。RealSense 的
-        inverse/modified/fisheye 模型不能直接把同一组系数塞给 OpenCV；遇到
-        这些模型时必须先用对应模型矫正图像或重新做 OpenCV 相机标定。
-        """
-        if self.color_intrinsics is None:
-            raise RuntimeError("相机尚未启动，无法获取彩色相机畸变参数")
-
-        model = self.color_intrinsics.model
-        if model == rs.distortion.none:
-            return np.zeros((1, 5), dtype=np.float64)
-        if model == rs.distortion.brown_conrady:
-            return np.asarray(
-                self.color_intrinsics.coeffs, dtype=np.float64
-            ).reshape(1, 5)
-
-        raise RuntimeError(
-            "当前彩色流畸变模型不能直接用于 OpenCV solvePnP: "
-            f"{model}。请使用 OpenCV 标定得到的 K、D，或先将彩色图矫正。"
-        )
-
+        """返回 OpenCV 顺序的彩色相机畸变系数 [k1, k2, p1, p2, k3]。"""
+        return np.asarray(self.color_intrinsics.coeffs, dtype=np.float64).reshape(1, 5)
     def get_depth_intrinsics(self):
-        if self.depth_intrinsics is None:
-            raise RuntimeError("相机尚未启动，无法获取深度相机内参")
         d_fx = self.depth_intrinsics.fx
         d_fy = self.depth_intrinsics.fy
         d_cx = self.depth_intrinsics.ppx
@@ -481,9 +378,7 @@ class RealSenseCamera:
 
     def save_images(self, save_path):
         color_image, _= self.get_images()
-        if color_image is None:
-            return False
-        return bool(cv2.imwrite(save_path, color_image))
+        cv2.imwrite(save_path, color_image)
 
 def serial_number():
     ctx = rs.context()
@@ -557,33 +452,30 @@ if __name__ == "__main__":
     serial_number()
     list_camera_framerates()
     camera1 = RealSenseCamera(width=640, height=480)
-    if not camera1.start():
-        raise SystemExit(1)
     # 加载相机
     # camera1 = RealSenseCamera(width=1280, height=720, serial_number="233622070932")
     # camera2 = RealSen6seCamera(width=640, height=480, serial_number="938422074612")
     # while not camera2.start() and not camera1.start():
     #     print(f"\33[93m等待相机启动...\33[0m")
     #     time.sleep(0.2)  # 避免过度占用 CPU
-    try:
-        while True:
-            color_image1, depth_image1 = camera1.get_images()
-            # color_image2, depth_image2 = camera2.get_images()
+    while True:
+        color_image1, depth_image1 = camera1.get_images()
+        # color_image2, depth_image2 = camera2.get_images()
 
-            if color_image1 is None or depth_image1 is None:
-                continue
+        if color_image1 is None or depth_image1 is None:
+            continue
 
-            # 将16位深度图映射到8位 (0-255)。
-            depth_display = cv2.convertScaleAbs(depth_image1, alpha=0.03)
+        # 1. 将16位深度图映射到8位 (0-255)
+        # alpha 缩放因子：0.03 左右通常能让 0-3米 范围内的物体有较好的对比度
+        depth_display = cv2.convertScaleAbs(depth_image1, alpha=0.03)
 
-            # 显示图像
-            cv2.imshow('RealSense - Color1', color_image1)
-            cv2.imshow('RealSense - Depth1', depth_display)
-            # cv2.imshow('RealSense - Color2', color_image2)
+        # 2. 应用伪彩色（COLORMAP_JET 效果类似于常用的红色表示近，蓝色表示远）
+        # depth_colormap = cv2.applyColorMap(depth_display, cv2.COLORMAP_JET)
+        # 显示图像
+        cv2.imshow('RealSense - Color1', color_image1)
+        cv2.imshow('RealSense - Depth1', depth_display)
+        # cv2.imshow('RealSense - Color2', color_image2)
 
-            # 按'q'退出
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-    finally:
-        camera1.stop()
-        cv2.destroyAllWindows()
+        # 按'q'退出
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break

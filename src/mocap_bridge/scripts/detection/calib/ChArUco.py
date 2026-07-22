@@ -76,13 +76,39 @@ class CharucoDetectorNode(Node):
             self.get_logger().error('相机启动失败，请检查连接和流配置。')
             raise RuntimeError('RealSense camera start failed')
 
+        try:
+            self.initialize_detector()
+        except Exception:
+            # __init__ 失败时 main() 得不到 node 对象，必须在这里主动关闭
+            # RealSense；否则 SDK 后台线程会在解释器退出时触发 abort。
+            self.camera.stop()
+            raise
+
+    def initialize_detector(self):
         # K、D 必须来自当前正在使用的彩色流分辨率。
         self.camera_matrix = self.camera.get_color_intrinsic_matrix().astype(
             np.float64
         )
-        self.dist_coeffs = self.camera.get_color_distortion_coeffs().astype(
-            np.float64
+        distortion_model = self.camera.get_color_distortion_model()
+        self.use_undistorted_pnp_points = (
+            not self.camera.color_distortion_is_opencv_compatible()
         )
+        if self.use_undistorted_pnp_points:
+            if 'inverse_brown_conrady' not in str(distortion_model):
+                raise RuntimeError(
+                    f'暂不支持彩色流畸变模型: {distortion_model}'
+                )
+            # 角点将由 RealSense 转换到使用同一 K 的无畸变虚拟图像，
+            # 因此 solvePnP 使用全零 D。
+            self.dist_coeffs = np.zeros((1, 5), dtype=np.float64)
+            self.get_logger().warn(
+                '彩色流为 inverse_brown_conrady：将先用 RealSense 反投影'
+                '矫正 ChArUco 角点，再使用 K + 零畸变进行 PnP。'
+            )
+        else:
+            self.dist_coeffs = (
+                self.camera.get_color_distortion_coeffs().astype(np.float64)
+            )
 
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(
             cv2.aruco.DICT_6X6_250
@@ -104,8 +130,9 @@ class CharucoDetectorNode(Node):
         )
 
         self.charuco_params = cv2.aruco.CharucoParameters()
-        self.charuco_params.cameraMatrix = self.camera_matrix
-        self.charuco_params.distCoeffs = self.dist_coeffs
+        if not self.use_undistorted_pnp_points:
+            self.charuco_params.cameraMatrix = self.camera_matrix
+            self.charuco_params.distCoeffs = self.dist_coeffs
         self.charuco_params.tryRefineMarkers = True
         self.charuco_detector = cv2.aruco.CharucoDetector(
             self.board,
@@ -150,14 +177,7 @@ class CharucoDetectorNode(Node):
 
         if pose is not None:
             rvec, tvec, reprojection_rmse = pose
-            cv2.drawFrameAxes(
-                color_image,
-                self.camera_matrix,
-                self.dist_coeffs,
-                rvec,
-                tvec,
-                self.square_length * 2.0,
-            )
+            self.draw_pose_axes(color_image, rvec, tvec)
             cv2.putText(
                 color_image,
                 f'PnP RMSE: {reprojection_rmse:.2f} px',
@@ -190,10 +210,16 @@ class CharucoDetectorNode(Node):
         )
         obj_points = np.asarray(obj_points, dtype=np.float64).reshape(-1, 3)
         img_points = np.asarray(img_points, dtype=np.float64).reshape(-1, 2)
+        if self.use_undistorted_pnp_points:
+            pnp_img_points = self.camera.color_points_to_undistorted_pixels(
+                img_points
+            )
+        else:
+            pnp_img_points = img_points
 
         success, rvec, tvec = cv2.solvePnP(
             obj_points,
-            img_points,
+            pnp_img_points,
             self.camera_matrix,
             self.dist_coeffs,
             flags=cv2.SOLVEPNP_IPPE,
@@ -205,7 +231,7 @@ class CharucoDetectorNode(Node):
         if hasattr(cv2, 'solvePnPRefineLM'):
             rvec, tvec = cv2.solvePnPRefineLM(
                 obj_points,
-                img_points,
+                pnp_img_points,
                 self.camera_matrix,
                 self.dist_coeffs,
                 rvec,
@@ -225,7 +251,9 @@ class CharucoDetectorNode(Node):
         )
         projected = projected.reshape(-1, 2)
         reprojection_rmse = float(
-            np.sqrt(np.mean(np.sum((projected - img_points) ** 2, axis=1)))
+            np.sqrt(
+                np.mean(np.sum((projected - pnp_img_points) ** 2, axis=1))
+            )
         )
         if (
             not np.isfinite(reprojection_rmse)
@@ -234,6 +262,49 @@ class CharucoDetectorNode(Node):
             return None
 
         return rvec, tvec, reprojection_rmse
+
+    def draw_pose_axes(self, color_image, rvec, tvec):
+        """在原始彩色图上绘制坐标轴，并正确处理 inverse 畸变。"""
+        axis_length = self.square_length * 2.0
+        if not self.use_undistorted_pnp_points:
+            cv2.drawFrameAxes(
+                color_image,
+                self.camera_matrix,
+                self.dist_coeffs,
+                rvec,
+                tvec,
+                axis_length,
+            )
+            return
+
+        axis_points = np.array(
+            [
+                [0.0, 0.0, 0.0],
+                [axis_length, 0.0, 0.0],
+                [0.0, axis_length, 0.0],
+                [0.0, 0.0, axis_length],
+            ],
+            dtype=np.float64,
+        )
+        undistorted_pixels, _ = cv2.projectPoints(
+            axis_points,
+            rvec,
+            tvec,
+            self.camera_matrix,
+            self.dist_coeffs,
+        )
+        raw_pixels = self.camera.undistorted_color_points_to_raw_pixels(
+            undistorted_pixels.reshape(-1, 2)
+        )
+        if not np.all(np.isfinite(raw_pixels)):
+            return
+
+        raw_pixels = np.rint(raw_pixels).astype(np.int32)
+        origin = tuple(raw_pixels[0])
+        # 与 cv2.drawFrameAxes 一致：X 红、Y 绿、Z 蓝。
+        cv2.line(color_image, origin, tuple(raw_pixels[1]), (0, 0, 255), 2)
+        cv2.line(color_image, origin, tuple(raw_pixels[2]), (0, 255, 0), 2)
+        cv2.line(color_image, origin, tuple(raw_pixels[3]), (255, 0, 0), 2)
 
     def publish_pose(self, rvec, tvec, capture_time_ns):
         """发布 ^camera T_target。"""
