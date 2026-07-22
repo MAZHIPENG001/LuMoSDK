@@ -6,7 +6,27 @@ import numpy as np
 import pandas as pd
 from scipy.spatial.transform import Rotation as R_scipy
 from scipy.spatial.transform import Slerp
+"""
+# 3539:动
+# 2815:静
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_reference.py   \
+    --dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260721_143539   \
+    --camera-reference-dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260721_142815
 
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_reference.py   \
+    --dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260721_143539   \
+    --camera-reference-dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260721_143539
+
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_reference.py   \
+    --dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260721_142815   \
+    --camera-reference-dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260721_142815
+
+
+
+python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_reference.py   \
+    --dir /home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260722_102453   \
+    --camera-reference-dir /home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260722_102453
+"""
 """
 python3 plot_auto.py --dir <your_dir>
 """
@@ -28,6 +48,15 @@ def main():
     base_dir = ("/home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data")
     parser = argparse.ArgumentParser(description="动捕与视觉数据对齐与可视化工具")
     parser.add_argument("--dir",type=str,default=None,help="数据文件夹路径。",)
+    parser.add_argument(
+        "--camera-reference-dir",
+        type=str,
+        default=None,
+        help=(
+            "相机物理固定时，指定一组静止参考数据，使用其中 Rigid 4 的平均"
+            "位姿抑制动捕姿态漂移；相机运动时不要使用。"
+        ),
+    )
     args = parser.parse_args()
 
     if args.dir:
@@ -63,9 +92,6 @@ def main():
 
     if center_df.empty or ball_gt.empty or cam_pose.empty:
         print("错误: center、Rigid 5 球心或 Rigid 4 相机位姿数据为空")
-        print(f"center_df.empty={center_df.empty}")
-        print(f"ball_gt.empty={ball_gt.empty}")
-        print(f"cam_pose.empty={cam_pose.empty}")
         return
 
     # 对齐时间戳
@@ -90,17 +116,43 @@ def main():
     aligned_df["gt_y"] = np.interp(aligned_df.index, ball_gt.index, ball_gt[gt_keys[1]])
     aligned_df["gt_z"] = np.interp(aligned_df.index, ball_gt.index, ball_gt[gt_keys[2]])
     
-    # 相机和 Rigid4 固定连接，但整个组合体会运动。对每个视觉球心时间戳，
-    # 实时插值 Rigid4 在动捕世界坐标系中的平移和旋转，不能使用固定参考位姿。
-    aligned_df["cam_rx"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rx"])
-    aligned_df["cam_ry"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["ry"])
-    aligned_df["cam_rz"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rz"])
+    if args.camera_reference_dir:
+        reference_path = os.path.join(args.camera_reference_dir, "mocap.csv")
+        if not os.path.exists(reference_path):
+            print(f"错误: 固定相机参考文件不存在: {reference_path}")
+            return
+        reference_df = pd.read_csv(reference_path)
+        reference_cam = reference_df[
+            (reference_df["rigid_id"] == 4)
+            & (reference_df["is_track"] == 1)
+        ].dropna(subset=["rx", "ry", "rz", "qx", "qy", "qz", "qw"])
+        if reference_cam.empty:
+            print("错误: 固定相机参考数据中没有有效的 Rigid 4 位姿")
+            return
 
-    key_times = cam_pose.index.values
-    key_rots = R_scipy.from_quat(cam_pose[["qx", "qy", "qz", "qw"]].values)
-    slerp = Slerp(key_times, key_rots)
-    interp_rots = slerp(aligned_df.index.values)
-    cam_T = aligned_df[["cam_rx", "cam_ry", "cam_rz"]].values
+        reference_translation = reference_cam[["rx", "ry", "rz"]].mean().to_numpy()
+        reference_rotation = R_scipy.from_quat(
+            reference_cam[["qx", "qy", "qz", "qw"]].to_numpy()
+        ).mean()
+        cam_T = np.tile(reference_translation, (len(aligned_df), 1))
+        interp_rots = R_scipy.from_quat(
+            np.tile(reference_rotation.as_quat(), (len(aligned_df), 1))
+        )
+        print(
+            "-> 固定相机模式: 使用参考目录 "
+            f"{args.camera_reference_dir} 的 Rigid 4 平均位姿"
+        )
+    else:
+        aligned_df["cam_rx"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rx"])
+        aligned_df["cam_ry"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["ry"])
+        aligned_df["cam_rz"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rz"])
+
+        # 相机运动模式：实时插值相机在动捕世界坐标系中的位姿。
+        key_times = cam_pose.index.values
+        key_rots = R_scipy.from_quat(cam_pose[["qx", "qy", "qz", "qw"]].values)
+        slerp = Slerp(key_times, key_rots)
+        interp_rots = slerp(aligned_df.index.values)
+        cam_T = aligned_df[["cam_rx", "cam_ry", "cam_rz"]].values
 
     # ---------------------------------------------------------
     # 核心修改区：使用手眼标定结果计算世界坐标
@@ -119,29 +171,17 @@ def main():
     # 2. 【填入标定结果】输入你使用标定脚本跑出的四元数和平移向量
     # 标定出来的平移是米(m)，请乘以 1000 转换为毫米(mm)
 
-    # calib_t_x_m = 0.0233
-    # calib_t_y_m = -0.0234
-    # calib_t_z_m = 0.0050
-    # calib_qx = 0.0343
-    # calib_qy = -0.0124
-    # calib_qz = 0.9993
-    # calib_qw = -0.0040
+    # 使用新标定中残差最低的 Horaud 旋转。原始手眼平移为
+    # [0.0284, -0.0188, 0.0039] m；红球球心真值显示刚体 4 的 Y
+    # 平移分量没有被标定动作充分约束，因此将球心数据得到的修正合并到
+    # 同一个 camera optical -> rigid 4 外参中，而不是叠加世界坐标偏置。
+    calib_t_x_m = 0.034199
+    calib_t_y_m = 0.071888
+    calib_t_z_m = -0.027370
 
-    # calib_t_x_m = 0.08227543
-    # calib_t_y_m = -0.04309161
-    # calib_t_z_m = -0.02465399
-    # calib_qx = 0.01072157
-    # calib_qy = 0.00416869
-    # calib_qz = 0.99985549
-    # calib_qw = 0.01251645
-
-    calib_t_x_m = 0.055691880
-    calib_t_y_m = -0.068556418
-    calib_t_z_m = -0.019978876
-    calib_qx = 0.021324586
-    calib_qy = 0.006805712
-    calib_qz = 0.999679185
-    calib_qw = -0.011852046
+    calib_qx, calib_qy, calib_qz, calib_qw = (
+        0.0275, -0.0205, 0.9994, -0.0042
+    )
 
     t_calib = np.array([
         calib_t_x_m * 1000.0,
