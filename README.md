@@ -54,7 +54,7 @@ python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data_save.py
 # python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto_calib.py --dir ***
 
 python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto_calib.py
-
+# realsense d435
 python3 src/mocap_bridge/scripts/plot_auto_calib.py \
-  --handeye-calib src/mocap_bridge/scripts/detection/calib/handeye_ball_refined.json
+  --handeye-calib src/mocap_bridge/scripts/detection/calib/handeye_ball_refined_realsensed435.json
 ```
