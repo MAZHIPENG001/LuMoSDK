@@ -26,6 +26,11 @@ src/mocap_bridge/scripts/data/
 src/mocap_bridge/scripts/detection/BALL_data
 src/mocap_bridge/scripts/detection/output
 
+# 本地采集数据（目录和文件名可能变化），保留 data 下的工具脚本
+/data/*
+!/data/*.py
+!/data/*.md
+
 # 模型文件 (防止误提交 .pt 模型)
 src/mocap_bridge/scripts/detection/pretrained_model/
 src/mocap_bridge/scripts/detection/model/
