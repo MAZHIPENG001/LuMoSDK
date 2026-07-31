@@ -48,8 +48,8 @@ src/mocap_bridge/scripts/detection/model/
 .idea/
 
 # 动态链接库 (防止误提交 .so 文件)
-*.so
-*.so.*
+# *.so
+# *.so.*
 lib/
 src/mocap_bridge/sdk/lib_arm/
 
