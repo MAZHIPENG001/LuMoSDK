@@ -1,0 +1,334 @@
+# RealSense 与动捕刚体 ChArUco 手眼标定
+
+本目录用于标定 RealSense 彩色相机光学坐标系与相机动捕刚体坐标系之间的固定外参。标定脚本为
+[`charuco_mocap_handeye_calib.py`](charuco_mocap_handeye_calib.py)。
+
+这是一个 eye-in-hand（眼在手上）标定问题：
+
+- RealSense 与动捕刚体必须刚性连接，标定期间作为一个整体移动。
+- ChArUco 标定板必须固定在动捕世界坐标系中，全程不能移动。
+- 动捕提供刚体位姿 `T_world_rigid`。
+- ChArUco PnP 提供标定板到相机的位姿 `T_camera_target`。
+- 脚本求解相机到刚体的固定变换 `T_rigid_camera`。
+
+最终的坐标变换关系为：
+
+```text
+p_rigid = T_rigid_camera * p_camera
+p_world = T_world_rigid * T_rigid_camera * p_camera
+```
+
+其中 `p_camera` 位于 RealSense 彩色相机光学坐标系，单位为米。相机光学坐标系通常为 X 向右、Y
+向下、Z 向前。
+
+## 标定板规格
+
+脚本默认使用以下 ChArUco 标定板，实物尺寸必须与参数一致：
+
+| 参数 | 默认值 |
+| --- | --- |
+| ArUco 字典 | `DICT_6X6_250` |
+| 横向方格数 | `7` |
+| 纵向方格数 | `5` |
+| 单个方格边长 | `18.12 mm` |
+| ArUco Marker 边长 | `14.46 mm` |
+| 整板方格区域尺寸 | `126.84 mm × 90.60 mm` |
+
+打印标定板时不要使用“适合页面”或其他自动缩放选项。打印后应使用卡尺复核方格边长，并将标定板平整、
+牢固地固定在不会随相机运动的位置。
+
+## 环境与设备要求
+
+- ROS 2 Humble，且已构建 `mocap_bridge`，能够导入 `mocap_bridge.msg.MocapData`。
+- Intel RealSense 相机及 `pyrealsense2`。
+- Python 依赖：`numpy`、`scipy` 和带 `aruco` 模块的 OpenCV。
+- OpenCV 需要提供 `cv2.aruco.CharucoDetector`；通常应安装与当前 Python 环境兼容的
+  `opencv-contrib-python`。
+- 动捕系统能够在 `/mocap_data` 发布待标定刚体，默认使用刚体 `4`。
+- 脚本必须在交互式终端中运行，才能使用 `s/u/c/q` 快捷键。
+
+可以先检查关键 Python 模块：
+
+```bash
+python3 -c "import cv2, numpy, scipy, pyrealsense2; print(cv2.__version__); print(hasattr(cv2.aruco, 'CharucoDetector'))"
+```
+
+输出的最后一项应为 `True`。
+
+首次使用时，在仓库根目录构建并加载 ROS 2 工作空间：
+
+```bash
+source /opt/ros/humble/setup.bash
+./switch_sdk_arch.sh
+colcon build --packages-select mocap_bridge --cmake-clean-cache
+source install/setup.bash
+```
+
+## 标定前准备
+
+1. 将 RealSense 和动捕刚体牢固安装在一起。标定完成后不能再改变二者的相对位置。
+2. 将 ChArUco 板固定在动捕空间中，保证相机移动过程中标定板本身不动。
+3. 确认动捕刚体 ID、位姿方向和位置单位。本项目默认刚体 ID 为 `4`，位置单位为毫米，SDK 输出的
+   位姿按 `rigid_to_world` 使用。
+4. 确认相机能在所选分辨率和帧率下同时开启彩色流与深度流，默认配置为 `640×480@60 Hz`。
+5. 保证曝光充足、图像清晰，尽量避免反光、运动模糊和标定板占画面过小。
+
+标定时应保持以下装配关系：
+
+```text
+固定不动：ChArUco 标定板
+
+移动整体：[RealSense 相机] ——刚性连接—— [动捕刚体]
+```
+
+## 运行方法
+
+### 1. 启动动捕发布节点
+
+在仓库根目录打开第一个终端：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export LD_LIBRARY_PATH="$PWD/src/mocap_bridge/sdk/lib:${LD_LIBRARY_PATH:-}"
+ros2 run mocap_bridge mocap_publisher
+```
+
+另开终端确认话题和刚体数据正常：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic hz /mocap_data
+ros2 topic echo /mocap_data --once
+```
+
+需要确认目标刚体的 `rigid_id` 正确，并且 `is_track: true`。
+
+### 2. 启动标定脚本
+
+在第二个交互式终端中进入本目录运行。进入本目录后，默认输出会保存为本目录下的
+`handeye_calibration.json`。
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+cd src/mocap_bridge/scripts/detection/calib
+
+python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p rigid_id:=4 \
+  -p mocap_position_scale:=0.001 \
+  -p mocap_pose_direction:=rigid_to_world
+```
+
+对时间同步和图像质量要求较高时，可使用更严格的采样参数：
+
+```bash
+python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p rigid_id:=4 \
+  -p mocap_position_scale:=0.001 \
+  -p mocap_pose_direction:=rigid_to_world \
+  -p averaging_window_sec:=0.8 \
+  -p min_window_pairs:=30 \
+  -p min_charuco_corners:=18 \
+  -p max_reprojection_error_px:=0.5 \
+  -p max_pair_delta_sec:=0.015 \
+  -p output_file:=handeye_calibration.json
+```
+
+如果连接了多台 RealSense，可通过序列号指定相机：
+
+```bash
+python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p camera_serial:="相机序列号" \
+  -p rigid_id:=4 \
+  -p mocap_pose_direction:=rigid_to_world
+```
+
+## 采样流程
+
+预览窗口左上角会显示：
+
+- `saved`：已经保存的标定位姿数量。
+- `PnP`：当前 ChArUco PnP 重投影 RMSE，单位为像素，越小越好。
+- `dt`：当前相机帧与最近动捕帧的时间差，单位为毫秒，越小越好。
+
+终端快捷键如下：
+
+| 按键 | 功能 |
+| --- | --- |
+| `s` | 保存当前静止位姿；实际保存的是最近一段时间内多帧位姿的平均值 |
+| `u` | 删除最后一个已保存位姿 |
+| `c` | 计算标定结果并写入 JSON；成功后程序自动退出 |
+| `q` | 不计算，直接退出 |
+
+推荐按以下方式采样：
+
+1. 将相机移动到一个能清晰看到标定板的位置。
+2. 停稳相机和刚体，至少等待一个 `averaging_window_sec`。
+3. 确认 ChArUco 角点正常显示，`PnP` 和 `dt` 没有超过设定阈值。
+4. 按一次 `s`，终端出现 `saved pose N` 后再移动到下一个位姿。
+5. 采集 15～25 个差异明显的位姿。程序默认至少需要 12 个。
+6. 完成采样后按 `c` 计算并保存结果。
+
+采样不能只做平移。相机应绕至少两个不平行的轴产生充分旋转，同时改变观察距离和画面位置。建议覆盖
+俯仰、偏航和适量滚转，但始终保证标定板清晰可见。相邻样本若平移小于 `10 mm` 且旋转小于 `5°`，
+默认会被视为重复位姿而拒绝保存。
+
+## ROS 2 参数
+
+### 标定板与角点检测
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `squares_x` | `7` | 横向方格数 |
+| `squares_y` | `5` | 纵向方格数 |
+| `square_length_m` | `0.01812` | 方格边长，单位为米 |
+| `marker_length_m` | `0.01446` | Marker 边长，单位为米 |
+| `legacy_pattern` | `false` | 是否使用 OpenCV ChArUco 旧版图案布局 |
+| `min_charuco_corners` | `8` | 单帧 PnP 所需的最少 ChArUco 角点数，程序内部下限为 4 |
+| `max_reprojection_error_px` | `1.0` | 接受单帧 PnP 的最大重投影 RMSE，单位为像素 |
+
+### 相机
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `camera_serial` | 空 | RealSense 序列号；为空时使用可用设备 |
+| `width` | `640` | 彩色流和深度流宽度 |
+| `height` | `480` | 彩色流和深度流高度 |
+| `fps` | `60` | 彩色流、深度流和处理定时器频率 |
+| `show_image` | `true` | 是否显示检测预览窗口 |
+
+### 动捕与时间配对
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `rigid_id` | `4` | 与相机刚性连接的动捕刚体 ID |
+| `mocap_position_scale` | `0.001` | 动捕平移转换到米的比例；输入为毫米时使用 `0.001` |
+| `mocap_pose_direction` | `auto` | `rigid_to_world`、`world_to_rigid` 或 `auto` |
+| `use_mocap_header_stamp` | `true` | 优先使用 `/mocap_data` 的 ROS Header 时间戳 |
+| `max_pair_delta_sec` | `0.03` | 相机帧与动捕帧允许的最大时间差，单位为秒 |
+
+本项目的动捕发布节点在本机收到 SDK 数据时写入 ROS Header，相机采集时间也使用本机系统时钟，因此默认
+可以直接配对。如果接入其他动捕发布节点，应确认两个时间戳来自同一时钟域。
+
+### 静止窗口、样本筛选与输出
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `averaging_window_sec` | `0.40` | 按 `s` 时参与平均的最近时间窗口，单位为秒 |
+| `min_window_pairs` | `8` | 一个静止位姿至少需要的有效相机/动捕配对帧数 |
+| `stationary_mocap_translation_m` | `0.002` | 窗口内动捕平移最大离散阈值 |
+| `stationary_mocap_rotation_deg` | `0.5` | 窗口内动捕旋转最大离散阈值 |
+| `stationary_pnp_translation_m` | `0.003` | 窗口内 PnP 平移最大离散阈值 |
+| `stationary_pnp_rotation_deg` | `0.8` | 窗口内 PnP 旋转最大离散阈值 |
+| `duplicate_translation_m` | `0.010` | 与上一样本比较时的重复平移阈值 |
+| `duplicate_rotation_deg` | `5.0` | 与上一样本比较时的重复旋转阈值 |
+| `min_samples` | `12` | 计算标定所需的最少已保存位姿数，程序内部下限为 3 |
+| `max_outlier_fraction` | `0.25` | 鲁棒重算时最多允许剔除的样本比例 |
+| `output_file` | `handeye_calibration.json` | 输出路径；相对路径以启动脚本时的当前目录为基准 |
+
+## 输出文件说明
+
+脚本会运行 Tsai-Lenz、Park、Horaud、Andreff 和 Daniilidis 五种 OpenCV 手眼标定方法，并按固定标定板
+在动捕世界中的位姿一致性选择残差最小的结果。若 `mocap_pose_direction=auto`，还会同时尝试两种动捕
+位姿方向。
+
+输出 JSON 的主要字段如下：
+
+| 字段 | 说明 |
+| --- | --- |
+| `selected` | 最终选中的求解方法、位姿方向、变换和残差 |
+| `selected.T_rigid_camera` | 相机彩色光学坐标系到动捕刚体坐标系的 `4×4` 齐次变换 |
+| `selected.quaternion_xyzw` | 与上述旋转矩阵对应的四元数，顺序为 `x, y, z, w` |
+| `selected.translation_m` | 与上述变换对应的平移，单位为米 |
+| `T_camera_rigid` | `T_rigid_camera` 的逆变换 |
+| `sample_count_collected` | 总采样数 |
+| `sample_count_used` | 剔除离群样本后实际参与求解的样本数 |
+| `rejected_sample_indices_zero_based` | 被剔除样本的零基索引 |
+| `all_solver_results` | 所有成功求解候选项及其残差 |
+| `sample_quality` | 每个样本的帧数、时间差、PnP 误差和角点数 |
+
+`translation_rmse_mm` 和 `rotation_rmse_deg` 表示将各次观测还原到固定标定板后，标定板位姿在动捕世界
+中的离散程度。数值越小越好，但它们是内部一致性指标，不能替代独立数据上的精度验证。还应检查：
+
+- 不同求解方法的结果是否接近。
+- 是否有大量样本被剔除。
+- `sample_quality` 中是否存在明显偏大的时间差或 PnP 误差。
+- 外参平移是否与相机和刚体的实际安装距离大致相符。
+
+重新标定会覆盖同名输出文件。更换相机、分辨率、镜头参数或相机与刚体的安装关系后，都应重新标定。
+目录中已有的 JSON 只对应生成它时的硬件和数据，不能直接视为其他设备的有效外参。
+
+## 结果验证
+
+建议使用未参与标定的独立数据验证外参。项目中的 `plot_auto_calib.py` 会读取
+`selected.T_rigid_camera`，将相机测得的三维点转换到动捕世界坐标系。以下验证和修正命令均在仓库
+根目录执行：
+
+```bash
+python3 src/mocap_bridge/scripts/plot_auto_calib.py \
+  --dir src/mocap_bridge/scripts/data/<数据目录> \
+  --handeye-calib src/mocap_bridge/scripts/detection/calib/handeye_calibration.json
+```
+
+当前 `plot_auto_calib.py` 使用刚体 `4`，并要求标定结果的
+`selected.mocap_pose_direction` 为 `rigid_to_world`。因此在本项目默认链路中，建议标定时显式设置
+`-p mocap_pose_direction:=rigid_to_world`。
+
+如果后续任务专门使用 RGB-D 球心，且独立验证发现稳定的系统偏差，可再使用
+`scripts/refine_ball_extrinsic.py` 拟合“球心检测有效外参”。它不是基础手眼标定的替代品，输出也可能吸收
+深度和球心算法的系统误差。至少需要 3 组、推荐 6 组以上不同方向和距离的数据，并应保留额外数据做独立
+验证：
+
+```bash
+python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
+  --dirs <数据目录1> <数据目录2> <数据目录3> \
+  --input src/mocap_bridge/scripts/detection/calib/handeye_calibration.json \
+  --output src/mocap_bridge/scripts/detection/calib/handeye_ball_refined.json
+```
+
+每个输入目录必须包含 `center_raw.csv` 和 `mocap.csv`。
+
+## 常见问题
+
+### 没有同步数据，或 `dt` 一直很大
+
+- 检查 `/mocap_data` 是否持续发布，以及目标刚体是否处于跟踪状态。
+- 确认相机时间和动捕 Header 时间来自同一台主机、同一时钟域。
+- 本项目默认最大时间差为 `30 ms`；严格配置中的 `15 ms` 不适合低频或延迟较大的动捕链路。
+- 如果外部动捕节点的 Header 时间戳不可用，可评估后设置
+  `-p use_mocap_header_stamp:=false`，改用本节点的消息接收时间。
+
+### 按 `s` 后提示位姿不静止
+
+保持设备静止更长时间，避免手持抖动、标定板晃动和画面模糊。根据真实传感器噪声，可适度放宽对应的
+`stationary_*` 阈值，但不应通过大幅放宽阈值掩盖运动或同步问题。
+
+### 提示位姿与上一样本过于相似
+
+继续移动并旋转相机，增加相邻样本之间的平移或旋转差异。只在同一朝向下改变距离不能提供充分的旋转
+激励。
+
+### 提示旋转激励不足
+
+增加绕至少两个不平行轴的旋转样本。程序要求样本集合中存在足够大的相对旋转，纯平移或只绕单一轴旋转
+无法可靠求解手眼外参。
+
+### 检测不到 ChArUco，或 PnP 误差过大
+
+- 核对字典、方格数量和物理尺寸。
+- 增大标定板在画面中的占比，改善照明和对焦，缩短曝光以减少运动模糊。
+- 避免标定板弯曲、强反光、严重遮挡和极端倾斜角度。
+- 严格配置要求至少 18 个角点且重投影 RMSE 不超过 `0.5 px`；可先使用默认的 8 个角点和
+  `1.0 px` 排查检测链路。
+
+### 相机启动失败
+
+确认相机未被其他程序占用，并确认设备支持配置的彩色流和深度流分辨率、格式及帧率。必要时降低 `fps`
+或改用设备支持的 `width`、`height` 组合。
+
+### 快捷键无效
+
+脚本需要直接连接交互式 TTY。不要通过会切断标准输入的后台启动方式运行；即使
+`show_image=false`，保存和计算仍需在终端中按键。
