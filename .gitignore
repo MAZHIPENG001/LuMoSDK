@@ -37,6 +37,7 @@ src/mocap_bridge/scripts/detection/model/
 *.pt
 *.pth
 *.onnx
+*.engine
 
 # 系统文件
 .DS_Store
