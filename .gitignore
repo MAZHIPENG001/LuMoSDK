@@ -33,7 +33,7 @@ src/mocap_bridge/scripts/detection/output
 
 # 模型文件 (防止误提交 .pt 模型)
 src/mocap_bridge/scripts/detection/pretrained_model/
-src/mocap_bridge/scripts/detection/model/
+# src/mocap_bridge/scripts/detection/model/
 *.pt
 *.pth
 *.onnx
