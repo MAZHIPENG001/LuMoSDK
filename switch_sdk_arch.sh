@@ -1,82 +1,86 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
-usage() {
-    cat <<'EOF'
-用法:
-  ./switch_sdk_arch.sh [auto|arm64|x86_64]
+# 默认以脚本所在目录作为项目根目录；也可以把项目根目录作为第一个参数传入。
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_ROOT="${1:-$SCRIPT_DIR}"
 
-参数:
-  auto     根据 uname -m 自动选择（默认）
-  arm64    使用 ARM64/aarch64 版本，即 lib_arm
-  x86_64   使用 x86_64/amd64 版本，即 lib_x86
-EOF
-}
-
-if [[ $# -gt 1 ]]; then
-    usage >&2
-    exit 2
+if [[ ! -d "$PROJECT_ROOT" ]]; then
+    echo "错误：项目根目录不存在：$PROJECT_ROOT" >&2
+    exit 1
 fi
+PROJECT_ROOT="$(cd -- "$PROJECT_ROOT" && pwd -P)"
 
-requested_arch="${1:-auto}"
-if [[ "$requested_arch" == "auto" ]]; then
-    requested_arch="$(uname -m)"
-fi
-
-case "$requested_arch" in
-    aarch64|arm64)
-        library_dir="lib_arm"
-        normalized_arch="arm64"
+MACHINE_ARCH="$(uname -m)"
+case "${MACHINE_ARCH,,}" in
+    x86_64|amd64|i386|i486|i586|i686)
+        SOURCE_LIB_NAME="lib_x86"
         ;;
-    x86_64|amd64)
-        library_dir="lib_x86"
-        normalized_arch="x86_64"
-        ;;
-    -h|--help)
-        usage
-        exit 0
+    aarch64|arm64|armhf|armv5*|armv6*|armv7*|armv8*)
+        SOURCE_LIB_NAME="lib_arm"
         ;;
     *)
-        echo "错误: 不支持的平台架构: $requested_arch" >&2
-        echo "当前脚本仅支持 ARM64/aarch64 和 x86_64/amd64。" >&2
+        echo "错误：不支持的系统架构：$MACHINE_ARCH" >&2
         exit 1
         ;;
 esac
 
-script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-sdk_dir="$script_dir/src/mocap_bridge/sdk"
-library_roots=("$script_dir" "$sdk_dir")
+SDK_DIR="$PROJECT_ROOT/src/mocap_bridge/sdk"
+TARGET_BASE_DIRS=(
+    "$PROJECT_ROOT"
+    "$SDK_DIR"
+)
 
-# 先检查两个架构目录，避免只切换了其中一个位置。
-for library_root in "${library_roots[@]}"; do
-    source_dir="$library_root/$library_dir"
+# 开始修改前先检查两处源目录，避免只切换成功一处。
+for base_dir in "${TARGET_BASE_DIRS[@]}"; do
+    source_dir="$base_dir/$SOURCE_LIB_NAME"
     if [[ ! -d "$source_dir" ]]; then
-        echo "错误: 架构库目录不存在: $source_dir" >&2
-        exit 1
-    fi
-    if [[ ! -f "$source_dir/libLuMoSDK.so" ]]; then
-        echo "错误: 架构库不存在: $source_dir/libLuMoSDK.so" >&2
+        echo "错误：找不到源目录：$source_dir" >&2
         exit 1
     fi
 done
 
-for library_root in "${library_roots[@]}"; do
-    source_dir="$library_root/$library_dir"
-    lib_path="$library_root/lib"
+replace_lib_directory() {
+    local base_dir="$1"
+    local source_dir="$base_dir/$SOURCE_LIB_NAME"
+    local destination_dir="$base_dir/lib"
+    local staging_dir
+    local backup_dir=""
 
-    if [[ -e "$lib_path" || -L "$lib_path" ]]; then
-        echo "删除旧路径: $lib_path"
-        rm -rf -- "$lib_path"
+    # 先完整复制到临时目录，复制失败时不会破坏原来的 lib。
+    staging_dir="$(mktemp -d "$base_dir/.lib-stage.XXXXXX")"
+    if ! cp -a -- "$source_dir/." "$staging_dir/"; then
+        rm -rf -- "$staging_dir"
+        echo "错误：复制失败：$source_dir" >&2
+        return 1
     fi
 
-    if [[ -e "$lib_path" || -L "$lib_path" ]]; then
-        echo "错误: 无法删除旧路径: $lib_path" >&2
-        exit 1
+    # 临时保留旧 lib；新目录就位成功后再删除旧目录。
+    if [[ -e "$destination_dir" || -L "$destination_dir" ]]; then
+        backup_dir="$(mktemp -d "$base_dir/.lib-backup.XXXXXX")"
+        rmdir -- "$backup_dir"
+        mv -- "$destination_dir" "$backup_dir"
     fi
 
-    cp -a -- "$source_dir" "$lib_path"
-    echo "已复制: $source_dir -> $lib_path"
+    if mv -- "$staging_dir" "$destination_dir"; then
+        if [[ -n "$backup_dir" ]]; then
+            rm -rf -- "$backup_dir"
+        fi
+    else
+        rm -rf -- "$staging_dir"
+        if [[ -n "$backup_dir" && -e "$backup_dir" ]]; then
+            mv -- "$backup_dir" "$destination_dir"
+        fi
+        echo "错误：无法更新目录：$destination_dir" >&2
+        return 1
+    fi
+
+    echo "已更新：$destination_dir <- $source_dir"
+}
+
+echo "检测到系统架构：$MACHINE_ARCH，选择：$SOURCE_LIB_NAME"
+for base_dir in "${TARGET_BASE_DIRS[@]}"; do
+    replace_lib_directory "$base_dir"
 done
-
-echo "LuMoSDK 已切换到 $normalized_arch 架构。"
+echo "SDK 架构库切换完成。"
