@@ -29,7 +29,7 @@ def positive_frequency(value: str) -> float:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="采集 RealSense 彩色图像。")
+    parser = argparse.ArgumentParser(description="采集 RealSense 或 ZED 彩色图像。")
     parser.add_argument(
         "save_dir",
         nargs="?",
@@ -45,6 +45,12 @@ def parse_args() -> argparse.Namespace:
         metavar="HZ",
         help="图片保存频率，单位为 Hz（默认：10）",
     )
+    parser.add_argument(
+        "--camera",
+        choices=("realsense", "zed"),
+        default="realsense",
+        help="相机类型（默认：realsense）",
+    )
     return parser.parse_args()
 
 
@@ -58,6 +64,37 @@ def next_image_number(save_dir: Path) -> int:
     return max(existing_numbers, default=0) + 1
 
 
+def create_camera(camera_type: str):
+    if camera_type == "realsense":
+        from device.realsense_camera import RealSenseCamera
+
+        return RealSenseCamera(width=640, height=480), "RealSense"
+
+    from device.zed_camera import ZEDCamera
+
+    return ZEDCamera(width=640, height=480), "ZED"
+
+
+def make_depth_display(depth_image, depth_scale: float, cv2):
+    """将不同相机的深度图统一转换为 0～5 米的伪彩色预览图。"""
+    import numpy as np
+
+    max_preview_depth_m = 5.0
+    depth_m = np.asarray(depth_image, dtype=np.float32) * float(depth_scale)
+    valid = np.isfinite(depth_m) & (depth_m > 0.0)
+
+    depth_8bit = np.zeros(depth_m.shape, dtype=np.uint8)
+    depth_8bit[valid] = np.clip(
+        depth_m[valid] * (255.0 / max_preview_depth_m),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
+
+    depth_display = cv2.applyColorMap(depth_8bit, cv2.COLORMAP_TURBO)
+    depth_display[~valid] = 0
+    return depth_display
+
+
 def main() -> None:
     args = parse_args()
     save_dir = args.save_dir.expanduser().resolve()
@@ -66,7 +103,6 @@ def main() -> None:
 
     sys.path.insert(0, str(DETECTION_DIR))
     import cv2
-    from device.realsense_camera import RealSenseCamera
 
     pic_counter = next_image_number(save_dir)
     if pic_counter == 1:
@@ -78,23 +114,28 @@ def main() -> None:
         f"（最小间隔 {save_interval:.3f} 秒）"
     )
 
-    camera = RealSenseCamera(width=640, height=480)
-    camera.start()
+    camera, camera_name = create_camera(args.camera)
     is_recording = False
     next_save_time = 0.0
 
     try:
+        if not camera.start():
+            raise RuntimeError(f"{camera_name} 相机启动失败")
+
         while True:
             color_image, depth_image = camera.get_images()
 
             if color_image is None or depth_image is None:
                 continue
 
-            # 将 16 位深度图映射到 8 位，以便显示。
-            depth_display = cv2.convertScaleAbs(depth_image, alpha=0.03)
+            depth_display = make_depth_display(
+                depth_image,
+                camera.depth_scale,
+                cv2,
+            )
 
-            cv2.imshow("RealSense - Color", color_image)
-            cv2.imshow("RealSense - Depth", depth_display)
+            cv2.imshow(f"{camera_name} - Color", color_image)
+            cv2.imshow(f"{camera_name} - Depth", depth_display)
 
             if is_recording:
                 current_time = time.monotonic()
