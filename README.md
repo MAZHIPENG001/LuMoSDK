@@ -38,16 +38,6 @@ chmod +x switch_sdk_arch.sh
 ./switch_sdk_arch.sh
 ```
 
-也可以显式指定目标架构：
-
-```bash
-./switch_sdk_arch.sh arm64
-# 或
-./switch_sdk_arch.sh x86_64
-```
-
-脚本会先删除两个位置已有的 `lib`（无论是目录还是符号链接），再将对应位置的 `lib_arm` 或 `lib_x86` 完整复制为新的 `lib` 目录，不会生成备份目录。架构库原目录不会被删除。
-
 切换后可通过以下命令确认两个 `lib` 均为实际目录，并检查动态库架构：
 
 ```bash
