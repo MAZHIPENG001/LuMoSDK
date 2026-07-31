@@ -26,7 +26,7 @@ cd LuMoSDK
 | ARM64（`aarch64`、`arm64`） | `lib_arm` |
 | x86_64（`x86_64`、`amd64`） | `lib_x86` |
 
-ROS 2 包固定从 `src/mocap_bridge/sdk/lib` 加载 SDK，仓库根目录的独立示例固定从 `lib` 加载 SDK。因此，构建前必须让以下两个 `lib` 同时指向当前平台对应的架构目录：
+ROS 2 包固定从 `src/mocap_bridge/sdk/lib` 加载 SDK，仓库根目录的独立示例固定从 `lib` 加载 SDK。因此，构建前必须将当前平台对应的架构库复制到以下两个 `lib` 目录：
 
 - `LuMoSDK/lib`
 - `LuMoSDK/src/mocap_bridge/sdk/lib`
@@ -46,14 +46,15 @@ chmod +x switch_sdk_arch.sh
 ./switch_sdk_arch.sh x86_64
 ```
 
-脚本会先删除两个位置已有的 `lib`，再将其设置为指向 `lib_arm` 或 `lib_x86` 的相对符号链接，不会生成备份目录。架构库原目录不会被删除。
+脚本会先删除两个位置已有的 `lib`（无论是目录还是符号链接），再将对应位置的 `lib_arm` 或 `lib_x86` 完整复制为新的 `lib` 目录，不会生成备份目录。架构库原目录不会被删除。
 
-切换后可通过以下命令确认两个链接及动态库架构：
+切换后可通过以下命令确认两个 `lib` 均为实际目录，并检查动态库架构：
 
 ```bash
-readlink lib
-readlink src/mocap_bridge/sdk/lib
+test -d lib && test ! -L lib
+test -d src/mocap_bridge/sdk/lib && test ! -L src/mocap_bridge/sdk/lib
 file lib/libLuMoSDK.so
+file src/mocap_bridge/sdk/lib/libLuMoSDK.so
 ```
 
 脚本仅支持仓库中已有动态库的 ARM64 和 x86_64 平台，不支持 32 位 ARM。切换架构后应清理 CMake 缓存并重新构建，不能复用其他架构的已有构建产物。

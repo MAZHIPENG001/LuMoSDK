@@ -62,6 +62,7 @@ for library_root in "${library_roots[@]}"; do
 done
 
 for library_root in "${library_roots[@]}"; do
+    source_dir="$library_root/$library_dir"
     lib_path="$library_root/lib"
 
     if [[ -e "$lib_path" || -L "$lib_path" ]]; then
@@ -74,8 +75,8 @@ for library_root in "${library_roots[@]}"; do
         exit 1
     fi
 
-    ln -s "$library_dir" "$lib_path"
-    echo "$lib_path -> $library_dir"
+    cp -a -- "$source_dir" "$lib_path"
+    echo "已复制: $source_dir -> $lib_path"
 done
 
 echo "LuMoSDK 已切换到 $normalized_arch 架构。"
