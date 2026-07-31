@@ -1,60 +1,112 @@
-# 下载
+# LuMoSDK
+
+LuMoSDK 的 ROS 2 桥接与数据处理工具，用于发布动捕和相机数据，以及订阅、保存和可视化相关数据。
+
+## 环境要求
+
+- ROS 2 Humble
+- Python 3
+- `colcon`
+
+## 获取源码
+
 ```bash
 git clone git@github.com:MAZHIPENG001/LuMoSDK.git
-
 cd LuMoSDK
-source /opt/ros/humble/setup.bash
-# pip install setuptools==59.6.0
-colcon build --packages-select mocap_bridge --cmake-clean-cache
 ```
 
-# 1. 步骤
-## 1.1 动捕数据作为ros话题发布
+下文中的命令均默认在仓库根目录执行。
+
+## 构建
+
 ```bash
-cd ~/GithubDoc/LuMoSDK
-colcon build --packages-select mocap_bridge
+source /opt/ros/humble/setup.bash
+colcon build --packages-select mocap_bridge --cmake-clean-cache
 source install/setup.bash
 ```
+
+如本地环境需要固定 `setuptools` 版本，可执行：
+
 ```bash
-cd ~/GithubDoc/LuMoSDK
-source install/setup.bash
-export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
+python3 -m pip install setuptools==59.6.0
 ```
+
+## 使用方法
+
+### 发布动捕数据
+
+在新终端中加载环境并设置 SDK 动态库路径：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export LD_LIBRARY_PATH="$PWD/src/mocap_bridge/sdk/lib:${LD_LIBRARY_PATH:-}"
+```
+
+通过 ROS 2 启动动捕发布节点：
+
+```bash
+ros2 run mocap_bridge mocap_publisher
+```
+
+也可以直接运行构建后的可执行文件：
+
 ```bash
 ./install/mocap_bridge/lib/mocap_bridge/mocap_publisher
 ```
-```bash
-cd ~/GithubDoc/LuMoSDK
-source install/setup.bash
-ros2 run mocap_bridge mocap_publisher
-```
-## 1.2 相机数据作为ros话题发布
-```bash
-cd ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/
-python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/eval_ros.py
-```
-## 1.3 消息订阅
-```bash
-# 数据查看
-cd ~/GithubDoc/LuMoSDK
-source install/setup.bash
-export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
-python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/mocap_subscriber.py
 
-```
-```bash
-# 数据保存
-cd ~/GithubDoc/LuMoSDK
-source install/setup.bash
-export LD_LIBRARY_PATH=src/mocap_bridge/sdk/lib:$LD_LIBRARY_PATH
-python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data_save.py
-```
-## 1.4 绘图
-```bash
-# python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto_calib.py --dir ***
+### 发布相机数据
 
-python3 ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/plot_auto_calib.py
-# realsense d435
+```bash
+source /opt/ros/humble/setup.bash
+cd src/mocap_bridge/scripts/detection
+python3 eval_ros.py
+```
+
+### 订阅数据
+
+查看动捕与视觉数据：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export LD_LIBRARY_PATH="$PWD/src/mocap_bridge/sdk/lib:${LD_LIBRARY_PATH:-}"
+python3 src/mocap_bridge/scripts/mocap_subscriber.py
+```
+
+订阅并保存数据：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export LD_LIBRARY_PATH="$PWD/src/mocap_bridge/sdk/lib:${LD_LIBRARY_PATH:-}"
+python3 src/mocap_bridge/scripts/data_save.py
+```
+
+数据默认保存到 `src/mocap_bridge/scripts/data/<时间戳>/`。
+
+### 绘制数据
+
+绘制最新一次保存的数据：
+
+```bash
+python3 src/mocap_bridge/scripts/plot_auto_calib.py
+```
+
+绘制指定目录中的数据：
+
+```bash
+python3 src/mocap_bridge/scripts/plot_auto_calib.py --dir /path/to/data
+```
+
+使用指定的手眼标定文件：
+
+```bash
 python3 src/mocap_bridge/scripts/plot_auto_calib.py \
-  --handeye-calib src/mocap_bridge/scripts/detection/calib/handeye_ball_refined_realsensed435.json
+  --handeye-calib \
+  src/mocap_bridge/scripts/detection/calib/handeye_ball_refined_ralsensed435.json
 ```
+
+## 其他工具
+
+图像采集、批量重命名及 ModelScope 数据集操作说明见 [`data/README.md`](data/README.md)。
