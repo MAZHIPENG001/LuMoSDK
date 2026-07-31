@@ -6,6 +6,23 @@ import numpy as np
 import pyzed.sl as sl
 
 
+# Native per-eye image modes documented by Stereolabs.  The SDK does not
+# expose a stream-profile query API like RealSense, so capabilities are
+# selected from the detected camera family below.
+_USB_STEREO_PROFILES = (
+    ("HD2K", 2208, 1242, (15,)),
+    ("HD1080", 1920, 1080, (15, 30)),
+    ("HD720", 1280, 720, (15, 30, 60)),
+    ("VGA", 672, 376, (15, 30, 60, 100)),
+)
+
+_GMSL_STEREO_PROFILES = (
+    ("HD1200", 1920, 1200, (15, 30, 60)),
+    ("HD1080", 1920, 1080, (15, 30, 60)),
+    ("SVGA", 960, 600, (15, 30, 60, 120)),
+)
+
+
 class _CameraIntrinsics:
     """RealSense-like intrinsics object used by the shared detection code."""
 
@@ -714,8 +731,124 @@ def list_devices():
         )
 
 
+def list_camera_capabilities(serial_number=None):
+    """打印并返回已连接 ZED 相机的分辨率、帧率及设备信息。
+
+    参数:
+        serial_number: 可选的相机序列号；指定后只显示该设备
+
+    返回:
+        包含 ``sdk_version`` 和 ``devices`` 的字典。每个设备的
+        ``profiles`` 给出原生单目图像的分辨率及其支持帧率。
+
+    注意:
+        ZED SDK 没有提供类似 RealSense stream profile 的查询接口，
+        因此分辨率/帧率组合根据 SDK 检测到的相机系列生成。GMSL2
+        多相机共享链路时，实际可用的最高帧率还会受采集卡带宽限制。
+    """
+    sdk_version = str(sl.Camera.get_sdk_version())
+    devices = sl.Camera.get_device_list()
+    requested_serial = (
+        None if serial_number is None else str(serial_number)
+    )
+    result = {"sdk_version": sdk_version, "devices": []}
+
+    print(f"ZED SDK版本: {sdk_version}")
+    print("检测到的ZED设备及支持的视频模式:")
+
+    matched_devices = 0
+    for index, device in enumerate(devices):
+        device_serial = str(getattr(device, "serial_number", "未知"))
+        if (
+            requested_serial is not None
+            and device_serial != requested_serial
+        ):
+            continue
+
+        matched_devices += 1
+        camera_model = getattr(device, "camera_model", "未知")
+        model_name = str(camera_model).rsplit(".", 1)[-1]
+        normalized_model = model_name.upper().replace("-", "_")
+
+        # ZED X One is monocular and cannot be used by this stereo/depth
+        # wrapper.  Other ZED X variants use the GMSL2 video modes.
+        is_x_one = "XONE" in normalized_model or "X_ONE" in normalized_model
+        is_gmsl_stereo = (
+            ("ZED_X" in normalized_model or "ZEDX" in normalized_model)
+            and not is_x_one
+        )
+        if is_x_one:
+            connection = "GMSL2（单目）"
+            profile_source = ()
+        elif is_gmsl_stereo:
+            connection = "GMSL2"
+            profile_source = _GMSL_STEREO_PROFILES
+        else:
+            connection = "USB 3.0"
+            profile_source = _USB_STEREO_PROFILES
+
+        profiles = []
+        for name, width, height, fps_values in profile_source:
+            # Do not advertise modes absent from the installed SDK version.
+            if getattr(sl.RESOLUTION, name, None) is None:
+                continue
+            profiles.append(
+                {
+                    "resolution": name,
+                    "width": width,
+                    "height": height,
+                    "fps": list(fps_values),
+                }
+            )
+
+        device_info = {
+            "index": index,
+            "camera_model": model_name,
+            "serial_number": device_serial,
+            "camera_state": str(
+                getattr(device, "camera_state", "未知")
+            ),
+            "connection": connection,
+            "device_id": getattr(device, "id", None),
+            "path": getattr(device, "path", None),
+            "profiles": profiles,
+        }
+        result["devices"].append(device_info)
+
+        print(f"\n\033[92m设备 {index}: {model_name}\033[0m")
+        print(f"  序列号: {device_serial}")
+        print(f"  状态: {device_info['camera_state']}")
+        print(f"  连接方式: {connection}")
+        if device_info["device_id"] is not None:
+            print(f"  设备ID: {device_info['device_id']}")
+        if device_info["path"]:
+            print(f"  设备路径: {device_info['path']}")
+
+        if profiles:
+            print("  支持的视频模式（单目输出尺寸）:")
+            for profile in profiles:
+                size = f"{profile['width']}x{profile['height']}"
+                print(
+                    f"    {profile['resolution']:<8} "
+                    f"{size:<10} 支持帧率: {profile['fps']}"
+                )
+        else:
+            print("  当前型号不是此封装支持的双目深度相机")
+
+    if matched_devices == 0:
+        if requested_serial is None:
+            print("\033[91m未检测到任何设备\033[0m")
+        else:
+            print(
+                "\033[91m未找到序列号为 "
+                f"{requested_serial} 的设备\033[0m"
+            )
+
+    return result
+
+
 if __name__ == "__main__":
-    list_devices()
+    list_camera_capabilities()
     camera = ZEDCamera(resolution=sl.RESOLUTION.SVGA, fps=120)
     if not camera.start():
         print("等待相机启动或启动失败退出程序。")
