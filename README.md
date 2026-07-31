@@ -65,21 +65,6 @@ file src/mocap_bridge/sdk/lib/libLuMoSDK.so
 source /opt/ros/humble/setup.bash
 ./switch_sdk_arch.sh
 colcon build --packages-select mocap_bridge --cmake-clean-cache
-
-
-cd ~/GithubDoc/LuMoSDK
-
-export SDK_LIB_DIR="$PWD/src/mocap_bridge/sdk/lib"
-export LD_LIBRARY_PATH="$SDK_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-colcon build \
-  --packages-select mocap_bridge \
-  --cmake-clean-cache \
-  --cmake-args \
-  "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-rpath-link,$SDK_LIB_DIR" \
-  "-DCMAKE_BUILD_RPATH=$SDK_LIB_DIR"
-
-
 source install/setup.bash
 ```
 
