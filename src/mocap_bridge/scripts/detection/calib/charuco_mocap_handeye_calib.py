@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Calibrate a RealSense color camera against mocap rigid body 4.
+"""Calibrate a RealSense or ZED camera against a mocap rigid body.
 
 This is an eye-in-hand calibration:
 
@@ -16,6 +16,7 @@ The board defaults below intentionally match detection/calib/ChArUco.py:
 
 # usage:
 python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p camera_type:=zed \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world \
@@ -39,7 +40,6 @@ import tty
 import cv2
 from mocap_bridge.msg import MocapData
 import numpy as np
-import pyrealsense2 as rs
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -50,8 +50,6 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DETECTION_DIR = os.path.dirname(SCRIPT_DIR)
 if DETECTION_DIR not in sys.path:
     sys.path.append(DETECTION_DIR)
-
-from device.realsense_camera import RealSenseCamera  # noqa: E402
 
 
 def stamp_to_seconds(stamp):
@@ -105,6 +103,7 @@ class CharucoMocapHandEye(Node):
         self.declare_parameter('max_reprojection_error_px', 1.0)
 
         # Camera parameters.
+        self.declare_parameter('camera_type', 'realsense')
         self.declare_parameter('camera_serial', '')
         self.declare_parameter('width', 640)
         self.declare_parameter('height', 480)
@@ -147,6 +146,24 @@ class CharucoMocapHandEye(Node):
             self.get_parameter('max_reprojection_error_px').value
         )
         self.show_image = bool(self.get_parameter('show_image').value)
+        camera_type = str(
+            self.get_parameter('camera_type').value
+        ).strip().lower()
+        camera_type_aliases = {
+            'realsense': 'realsense',
+            'rs': 'realsense',
+            'zed': 'zed',
+        }
+        if camera_type not in camera_type_aliases:
+            raise ValueError(
+                'camera_type must be realsense (or rs) or zed'
+            )
+        self.camera_type = camera_type_aliases[camera_type]
+        self.camera_optical_frame = (
+            'RealSense color optical frame'
+            if self.camera_type == 'realsense'
+            else 'ZED rectified left optical frame'
+        )
 
         self.rigid_id = int(self.get_parameter('rigid_id').value)
         self.mocap_position_scale = float(
@@ -215,15 +232,18 @@ class CharucoMocapHandEye(Node):
         self.latest_pair_delta_ms = None
         self.latest_rmse_px = None
 
-        serial = str(self.get_parameter('camera_serial').value).strip()
-        self.camera = RealSenseCamera(
+        self.camera_serial = str(
+            self.get_parameter('camera_serial').value
+        ).strip()
+        self.realsense_sdk = None
+        self.camera = self.create_camera(
             width=int(self.get_parameter('width').value),
             height=int(self.get_parameter('height').value),
             fps=int(self.get_parameter('fps').value),
-            serial_number=serial or None,
+            serial_number=self.camera_serial or None,
         )
         if not self.camera.start():
-            raise RuntimeError('RealSense camera start failed')
+            raise RuntimeError(f'{self.camera_type} camera start failed')
 
         try:
             self.initialize_detector()
@@ -241,7 +261,8 @@ class CharucoMocapHandEye(Node):
         self.timer = self.create_timer(1.0 / max(1, fps), self.process_frame)
 
         self.get_logger().info(
-            f'subscribed to /mocap_data; rigid_id={self.rigid_id}; '
+            f'camera={self.camera_type}; subscribed to /mocap_data; '
+            f'rigid_id={self.rigid_id}; '
             f'translation scale={self.mocap_position_scale:g}'
         )
         self.get_logger().info(
@@ -254,6 +275,35 @@ class CharucoMocapHandEye(Node):
             target=self.keyboard_loop, daemon=True
         )
         self.key_thread.start()
+
+    def create_camera(self, width, height, fps, serial_number):
+        if self.camera_type == 'realsense':
+            try:
+                import pyrealsense2 as rs
+                from device.realsense_camera import RealSenseCamera
+            except ImportError as error:
+                raise RuntimeError(
+                    'camera_type=realsense requires pyrealsense2 and the '
+                    'RealSense camera wrapper'
+                ) from error
+            self.realsense_sdk = rs
+            camera_class = RealSenseCamera
+        else:
+            try:
+                from device.zed_camera import ZEDCamera
+            except ImportError as error:
+                raise RuntimeError(
+                    'camera_type=zed requires the ZED SDK Python API '
+                    '(pyzed.sl) and the ZED camera wrapper'
+                ) from error
+            camera_class = ZEDCamera
+
+        return camera_class(
+            width=width,
+            height=height,
+            fps=fps,
+            serial_number=serial_number,
+        )
 
     def initialize_detector(self):
         self.camera_matrix = (
@@ -282,7 +332,7 @@ class CharucoMocapHandEye(Node):
             self.pnp_dist_coeffs = self.raw_dist_coeffs
         else:
             raise RuntimeError(
-                f'unsupported RealSense color distortion model: '
+                f'unsupported {self.camera_type} color distortion model: '
                 f'{self.distortion_model}'
             )
 
@@ -347,9 +397,13 @@ class CharucoMocapHandEye(Node):
             return
 
     def raw_to_ideal_pixels(self, raw_pixels):
+        if self.realsense_sdk is None:
+            raise RuntimeError(
+                'inverse Brown-Conrady conversion requires pyrealsense2'
+            )
         ideal_pixels = []
         for pixel in np.asarray(raw_pixels, dtype=np.float64).reshape(-1, 2):
-            point = rs.rs2_deproject_pixel_to_point(
+            point = self.realsense_sdk.rs2_deproject_pixel_to_point(
                 self.color_intrinsics,
                 [float(pixel[0]), float(pixel[1])],
                 1.0,
@@ -921,11 +975,12 @@ class CharucoMocapHandEye(Node):
         payload = {
             'transform_convention': {
                 'T_rigid_camera': (
-                    'maps camera_color_optical_frame points into mocap rigid '
-                    'body 4 coordinates'
+                    'maps selected camera optical-frame points into mocap '
+                    f'rigid body {self.rigid_id} coordinates'
                 ),
                 'T_camera_rigid': (
-                    'inverse; maps rigid body 4 points into camera coordinates'
+                    f'inverse; maps rigid body {self.rigid_id} points into '
+                    'the selected camera optical frame'
                 ),
             },
             'selected': self.result_summary(best),
@@ -945,6 +1000,9 @@ class CharucoMocapHandEye(Node):
                 'marker_length_m': self.marker_length,
             },
             'camera': {
+                'type': self.camera_type,
+                'requested_serial': self.camera_serial,
+                'optical_frame': self.camera_optical_frame,
                 'matrix': self.camera_matrix.tolist(),
                 'distortion_model': self.distortion_model,
                 'raw_distortion_coefficients': self.raw_dist_coeffs.tolist(),
@@ -968,10 +1026,12 @@ class CharucoMocapHandEye(Node):
             output_file.write('\n')
         return output_path
 
-    @staticmethod
-    def print_result(best, results, output_path, rejected_indices):
+    def print_result(self, best, results, output_path, rejected_indices):
         print('\n' + '=' * 80)
-        print('T_rigid_camera: camera_color_optical_frame -> mocap rigid body')
+        print(
+            f'T_rigid_camera: {self.camera_optical_frame} -> '
+            f'mocap rigid body {self.rigid_id}'
+        )
         print('=' * 80)
         for result in results:
             marker = '  <-- selected' if result is best else ''

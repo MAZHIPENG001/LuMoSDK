@@ -1,11 +1,11 @@
-# RealSense 与动捕刚体 ChArUco 手眼标定
+# RealSense / ZED 与动捕刚体 ChArUco 手眼标定
 
-本目录用于标定 RealSense 彩色相机光学坐标系与相机动捕刚体坐标系之间的固定外参。标定脚本为
+本目录用于标定 RealSense 彩色相机或 ZED 整流左目相机光学坐标系与相机动捕刚体坐标系之间的固定外参。标定脚本为
 [`charuco_mocap_handeye_calib.py`](charuco_mocap_handeye_calib.py)。
 
 这是一个 eye-in-hand（眼在手上）标定问题：
 
-- RealSense 与动捕刚体必须刚性连接，标定期间作为一个整体移动。
+- 相机与动捕刚体必须刚性连接，标定期间作为一个整体移动。
 - ChArUco 标定板必须固定在动捕世界坐标系中，全程不能移动。
 - 动捕提供刚体位姿 `T_world_rigid`。
 - ChArUco PnP 提供标定板到相机的位姿 `T_camera_target`。
@@ -18,8 +18,8 @@ p_rigid = T_rigid_camera * p_camera
 p_world = T_world_rigid * T_rigid_camera * p_camera
 ```
 
-其中 `p_camera` 位于 RealSense 彩色相机光学坐标系，单位为米。相机光学坐标系通常为 X 向右、Y
-向下、Z 向前。
+其中 `p_camera` 位于所选相机的光学坐标系（RealSense 彩色光学坐标系或 ZED 整流左目光学坐标系），
+单位为米。相机光学坐标系为 X 向右、Y 向下、Z 向前。
 
 ## 标定板规格
 
@@ -40,20 +40,20 @@ p_world = T_world_rigid * T_rigid_camera * p_camera
 ## 环境与设备要求
 
 - ROS 2 Humble，且已构建 `mocap_bridge`，能够导入 `mocap_bridge.msg.MocapData`。
-- Intel RealSense 相机及 `pyrealsense2`。
+- Intel RealSense 相机及 `pyrealsense2`，或 ZED 相机及 ZED SDK Python API `pyzed.sl`。
 - Python 依赖：`numpy`、`scipy` 和带 `aruco` 模块的 OpenCV。
 - OpenCV 需要提供 `cv2.aruco.CharucoDetector`；通常应安装与当前 Python 环境兼容的
   `opencv-contrib-python`。
 - 动捕系统能够在 `/mocap_data` 发布待标定刚体，默认使用刚体 `4`。
 - 脚本必须在交互式终端中运行，才能使用 `s/u/c/q` 快捷键。
 
-可以先检查关键 Python 模块：
+可以先检查公共 Python 模块及当前使用的相机 SDK（以下以 ZED 为例）：
 
 ```bash
-python3 -c "import cv2, numpy, scipy, pyrealsense2; print(cv2.__version__); print(hasattr(cv2.aruco, 'CharucoDetector'))"
+python3 -c "import cv2, numpy, scipy, pyzed.sl; print(cv2.__version__); print(hasattr(cv2.aruco, 'CharucoDetector'))"
 ```
 
-输出的最后一项应为 `True`。
+使用 RealSense 时将 `pyzed.sl` 替换为 `pyrealsense2`。输出的最后一项应为 `True`。
 
 首次使用时，在仓库根目录构建并加载 ROS 2 工作空间：
 
@@ -66,7 +66,7 @@ source install/setup.bash
 
 ## 标定前准备
 
-1. 将 RealSense 和动捕刚体牢固安装在一起。标定完成后不能再改变二者的相对位置。
+1. 将相机和动捕刚体牢固安装在一起。标定完成后不能再改变二者的相对位置。
 2. 将 ChArUco 板固定在动捕空间中，保证相机移动过程中标定板本身不动。
 3. 确认动捕刚体 ID、位姿方向和位置单位。本项目默认刚体 ID 为 `4`，位置单位为毫米，SDK 输出的
    位姿按 `rigid_to_world` 使用。
@@ -78,7 +78,7 @@ source install/setup.bash
 ```text
 固定不动：ChArUco 标定板
 
-移动整体：[RealSense 相机] ——刚性连接—— [动捕刚体]
+移动整体：[RealSense 或 ZED 相机] ——刚性连接—— [动捕刚体]
 ```
 
 ## 运行方法
@@ -116,6 +116,20 @@ source install/setup.bash
 cd src/mocap_bridge/scripts/detection/calib
 
 python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p camera_type:=realsense \
+  -p rigid_id:=4 \
+  -p mocap_position_scale:=0.001 \
+  -p mocap_pose_direction:=rigid_to_world
+```
+
+使用 ZED 时选择 `zed`。脚本使用与深度对齐的整流左目图像和对应零畸变内参：
+
+```bash
+python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p camera_type:=zed \
+  -p width:=640 \
+  -p height:=480 \
+  -p fps:=60 \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world
@@ -136,10 +150,11 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
   -p output_file:=handeye_calibration.json
 ```
 
-如果连接了多台 RealSense，可通过序列号指定相机：
+如果连接了多台同类型相机，可通过序列号指定设备：
 
 ```bash
 python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p camera_type:=zed \
   -p camera_serial:="相机序列号" \
   -p rigid_id:=4 \
   -p mocap_pose_direction:=rigid_to_world
@@ -193,7 +208,8 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `camera_serial` | 空 | RealSense 序列号；为空时使用可用设备 |
+| `camera_type` | `realsense` | 相机后端：`realsense`（也接受 `rs`）或 `zed` |
+| `camera_serial` | 空 | RealSense 或 ZED 序列号；为空时使用可用设备 |
 | `width` | `640` | 彩色流和深度流宽度 |
 | `height` | `480` | 彩色流和深度流高度 |
 | `fps` | `60` | 彩色流、深度流和处理定时器频率 |
