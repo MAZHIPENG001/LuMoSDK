@@ -34,7 +34,7 @@ def create_camera(camera_type):
         from device.realsense_camera import RealSenseCamera
 
         return (
-            RealSenseCamera(width=640, height=480, fps=120),
+            RealSenseCamera(width=640, height=480, fps=60),
             "RealSense",
         )
 

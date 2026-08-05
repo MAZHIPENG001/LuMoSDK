@@ -15,8 +15,10 @@ The board defaults below intentionally match detection/calib/ChArUco.py:
 7 x 5 squares, 18.12 mm square length, 14.46 mm marker length, DICT_6X6_250.
 
 # usage:
-python3 charuco_mocap_handeye_calib.py --ros-args \
-  -p camera_type:=zed \
+python3 charuco_mocap_handeye_calib.py \
+  --camera zed \
+  --output-file ./handeye_calibration.json \
+  --ros-args \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world \
@@ -27,6 +29,7 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
   -p max_pair_delta_sec:=0.015
 """
 
+import argparse
 from collections import deque
 import json
 import os
@@ -50,6 +53,30 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DETECTION_DIR = os.path.dirname(SCRIPT_DIR)
 if DETECTION_DIR not in sys.path:
     sys.path.append(DETECTION_DIR)
+
+
+def parse_args(args=None):
+    parser = argparse.ArgumentParser(
+        description='Calibrate a RealSense or ZED camera against mocap.'
+    )
+    parser.add_argument(
+        '--camera',
+        choices=('realsense', 'zed'),
+        default=None,
+        help='camera type (default: realsense)',
+    )
+    parser.add_argument(
+        '-o',
+        '--output-file',
+        type=Path,
+        default=None,
+        metavar='PATH',
+        help=(
+            'calibration JSON output path; parent directories are created '
+            'automatically (default: output_file ROS parameter)'
+        ),
+    )
+    return parser.parse_known_args(args)
 
 
 def stamp_to_seconds(stamp):
@@ -89,8 +116,26 @@ def mean_pose(rotation_matrices, translations):
     )
 
 
+def make_depth_display(depth_image, depth_scale):
+    """Convert a depth image into the shared 0-5 m color preview."""
+    max_preview_depth_m = 5.0
+    depth_m = np.asarray(depth_image, dtype=np.float32) * float(depth_scale)
+    valid = np.isfinite(depth_m) & (depth_m > 0.0)
+
+    depth_8bit = np.zeros(depth_m.shape, dtype=np.uint8)
+    depth_8bit[valid] = np.clip(
+        depth_m[valid] * (255.0 / max_preview_depth_m),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
+
+    depth_display = cv2.applyColorMap(depth_8bit, cv2.COLORMAP_TURBO)
+    depth_display[~valid] = 0
+    return depth_display
+
+
 class CharucoMocapHandEye(Node):
-    def __init__(self):
+    def __init__(self, camera_type_override=None, output_file_override=None):
         super().__init__('charuco_mocap_handeye_calibrator')
 
         # Board parameters: identical to ChArUco.py.
@@ -146,8 +191,13 @@ class CharucoMocapHandEye(Node):
             self.get_parameter('max_reprojection_error_px').value
         )
         self.show_image = bool(self.get_parameter('show_image').value)
-        camera_type = str(
+        configured_camera_type = str(
             self.get_parameter('camera_type').value
+        )
+        camera_type = str(
+            camera_type_override
+            if camera_type_override is not None
+            else configured_camera_type
         ).strip().lower()
         camera_type_aliases = {
             'realsense': 'realsense',
@@ -215,7 +265,15 @@ class CharucoMocapHandEye(Node):
         self.max_outlier_fraction = float(
             self.get_parameter('max_outlier_fraction').value
         )
-        self.output_file = str(self.get_parameter('output_file').value)
+        configured_output_file = str(
+            self.get_parameter('output_file').value
+        )
+        self.output_file = str(
+            output_file_override
+            if output_file_override is not None
+            else configured_output_file
+        )
+        self.output_path = Path(self.output_file).expanduser().resolve()
 
         if self.squares_x < 2 or self.squares_y < 2:
             raise ValueError('squares_x and squares_y must be at least 2')
@@ -264,6 +322,9 @@ class CharucoMocapHandEye(Node):
             f'camera={self.camera_type}; subscribed to /mocap_data; '
             f'rigid_id={self.rigid_id}; '
             f'translation scale={self.mocap_position_scale:g}'
+        )
+        self.get_logger().info(
+            f'calibration output: {self.output_path}'
         )
         self.get_logger().info(
             "Keep the board fixed. Stop at each pose, then press 's'. "
@@ -489,8 +550,14 @@ class CharucoMocapHandEye(Node):
         return result, marker_corners, marker_ids
 
     def process_frame(self):
-        color_image, _, metadata = self.camera.get_images(return_metadata=True)
-        if color_image is None or metadata is None:
+        color_image, depth_image, metadata = self.camera.get_images(
+            return_metadata=True
+        )
+        if (
+            color_image is None
+            or depth_image is None
+            or metadata is None
+        ):
             return
 
         gray = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
@@ -539,7 +606,21 @@ class CharucoMocapHandEye(Node):
                 (0, 255, 0),
                 2,
             )
-            cv2.imshow('ChArUco + mocap hand-eye calibration', color_image)
+            depth_display = make_depth_display(
+                depth_image,
+                self.camera.depth_scale,
+            )
+            if depth_display.shape[:2] != color_image.shape[:2]:
+                depth_display = cv2.resize(
+                    depth_display,
+                    (color_image.shape[1], color_image.shape[0]),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+            combined_display = cv2.hconcat([color_image, depth_display])
+            cv2.imshow(
+                'ChArUco + mocap hand-eye calibration + Depth',
+                combined_display,
+            )
             cv2.waitKey(1)
 
     def add_synchronized_pair(self, camera_time, pose):
@@ -966,7 +1047,7 @@ class CharucoMocapHandEye(Node):
     def save_result(
         self, best, results, all_samples, samples_used, rejected_indices
     ):
-        output_path = Path(self.output_file).expanduser().resolve()
+        output_path = self.output_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
         r_camera_rigid, t_camera_rigid = invert_transform(
@@ -1061,10 +1142,14 @@ class CharucoMocapHandEye(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
+    cli_args, ros_args = parse_args(args)
+    rclpy.init(args=ros_args)
     node = None
     try:
-        node = CharucoMocapHandEye()
+        node = CharucoMocapHandEye(
+            camera_type_override=cli_args.camera,
+            output_file_override=cli_args.output_file
+        )
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass

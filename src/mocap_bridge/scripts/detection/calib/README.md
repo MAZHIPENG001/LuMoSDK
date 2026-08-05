@@ -115,8 +115,10 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 cd src/mocap_bridge/scripts/detection/calib
 
-python3 charuco_mocap_handeye_calib.py --ros-args \
-  -p camera_type:=realsense \
+python3 charuco_mocap_handeye_calib.py \
+  --camera realsense \
+  --output-file ./handeye_calibration.json \
+  --ros-args \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world
@@ -125,8 +127,10 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
 使用 ZED 时选择 `zed`。脚本使用与深度对齐的整流左目图像和对应零畸变内参：
 
 ```bash
-python3 charuco_mocap_handeye_calib.py --ros-args \
-  -p camera_type:=zed \
+python3 charuco_mocap_handeye_calib.py \
+  --camera zed \
+  --output-file ./handeye_calibration_zed.json \
+  --ros-args \
   -p width:=640 \
   -p height:=480 \
   -p fps:=60 \
@@ -146,15 +150,31 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
   -p min_window_pairs:=30 \
   -p min_charuco_corners:=18 \
   -p max_reprojection_error_px:=0.5 \
-  -p max_pair_delta_sec:=0.015 \
-  -p output_file:=handeye_calibration.json
+  -p max_pair_delta_sec:=0.015
 ```
+
+`-o/--output-file` 用于指定标定 JSON 的保存位置，父目录不存在时会自动创建。例如：
+
+```bash
+python3 charuco_mocap_handeye_calib.py \
+  --camera realsense \
+  -o ~/calibration/handeye_calibration.json \
+  --ros-args -p rigid_id:=4
+```
+
+原有的 ROS 参数 `-p output_file:=...` 仍然可用；同时提供两者时，
+`--output-file` 优先。
+
+相机类型使用与采集、检测脚本相同的 `--camera realsense` 或
+`--camera zed` 进行切换，默认为 `realsense`。原有的 ROS 参数
+`-p camera_type:=...` 仍然兼容；同时提供两者时，`--camera` 优先。
 
 如果连接了多台同类型相机，可通过序列号指定设备：
 
 ```bash
-python3 charuco_mocap_handeye_calib.py --ros-args \
-  -p camera_type:=zed \
+python3 charuco_mocap_handeye_calib.py \
+  --camera zed \
+  --ros-args \
   -p camera_serial:="相机序列号" \
   -p rigid_id:=4 \
   -p mocap_pose_direction:=rigid_to_world
@@ -162,7 +182,8 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
 
 ## 采样流程
 
-预览窗口左上角会显示：
+预览窗口会像采集和检测脚本一样，将 ChArUco 彩色检测画面与 0～5 米伪彩色深度图横向放在同一窗口。
+彩色画面左上角会显示：
 
 - `saved`：已经保存的标定位姿数量。
 - `PnP`：当前 ChArUco PnP 重投影 RMSE，单位为像素，越小越好。
