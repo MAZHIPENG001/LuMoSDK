@@ -15,57 +15,26 @@
 
 ### 1.2 运行
 
-运行 `data_save.py`，并将图片保存目录作为第一个参数传入。默认使用 RealSense：
+基本用法：
 
 ```bash
-python3 ~/GithubDoc/LuMoSDK/data/data_save.py /path/to/save_dir
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py [保存目录] \
+  [--camera realsense|zed] [--frequency 保存频率]
 ```
 
-例如，将图片保存到当前目录下的 `pic_ball`：
-
-```bash
-python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_ball
-```
-
-使用 ZED 相机时，增加 `--camera zed`：
-
-```bash
-python3 ~/GithubDoc/LuMoSDK/data/data_save.py \
-  ./data/pic_ball \
-  --camera zed
-```
-
-`--camera` 可选值为 `realsense` 和 `zed`，默认值为 `realsense`。
-两个相机后端使用以下固定采集配置：
-
-- RealSense：`640×480 @ 120 FPS`。
-- ZED：`HD1200 @ 120 FPS`，对应
-  `ZEDCamera(resolution=sl.RESOLUTION.HD1200, fps=120)`。
-
-脚本只导入当前选择的相机驱动。
-
-使用 `--frequency`（或 `-f`）设置每秒保存的图片数量。例如，以 5 Hz 的频率保存图片：
+例如，使用默认的 RealSense 相机，以 5 Hz 保存图片：
 
 ```bash
 python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_ball --frequency 5
 ```
 
-也可以和相机类型一起指定：
+使用 ZED 相机：
 
 ```bash
-python3 ~/GithubDoc/LuMoSDK/data/data_save.py \
-  ./data/pic_ball \
-  --camera zed \
-  --frequency 5
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_ball --camera zed
 ```
 
-保存频率必须大于 0，默认值为 10 Hz。实际频率不会超过相机输出帧率，并可能受到图像处理和磁盘写入速度的影响。
-
-如果不传入目录，图片默认保存到 `data/pic_ball`：
-
-```bash
-python3 ~/GithubDoc/LuMoSDK/data/data_save.py --frequency 10
-```
+默认保存到 `data/pic_ball`，使用 RealSense，保存频率为 10 Hz。`--frequency`（或 `-f`）必须大于 0，实际频率受相机帧率、图像处理和磁盘速度限制。采集规格为 RealSense `640×480 @ 120 FPS`，ZED `HD1200 @ 120 FPS`。
 
 运行后可使用以下按键：
 
@@ -73,9 +42,7 @@ python3 ~/GithubDoc/LuMoSDK/data/data_save.py --frequency 10
 - `s`：停止采集。
 - `q`：退出程序。
 
-图片按 `pic001.jpg`、`pic002.jpg` 等格式保存。如果目录中已有同格式图片，新图片会从当前最大编号之后继续编号。
-
-窗口中的深度图用于预览，不会保存到磁盘。RealSense 和 ZED 的深度数据都会按米转换，并以 0～5 米范围显示为伪彩色图；无效深度显示为黑色。
+彩色图片按 `pic001.jpg`、`pic002.jpg` 等格式保存；已有图片时会从最大编号继续。深度图仅用于预览，以 0～5 米范围显示为伪彩色图，无效深度为黑色。
 
 ## 2. 批量重命名
 
