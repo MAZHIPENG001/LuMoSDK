@@ -16,9 +16,8 @@ The board defaults below intentionally match detection/calib/ChArUco.py:
 
 # usage:
 python3 charuco_mocap_handeye_calib.py \
-  --camera zed \
-  --output-file ./handeye_calibration.json \
   --ros-args \
+  -p camera_type:=zed \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world \
@@ -31,8 +30,8 @@ python3 charuco_mocap_handeye_calib.py \
 
 import argparse
 from collections import deque
+from datetime import datetime
 import json
-import os
 from pathlib import Path
 import select
 import sys
@@ -49,32 +48,15 @@ from rclpy.qos import qos_profile_sensor_data
 from scipy.spatial.transform import Rotation
 
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DETECTION_DIR = os.path.dirname(SCRIPT_DIR)
-if DETECTION_DIR not in sys.path:
-    sys.path.append(DETECTION_DIR)
+SCRIPT_DIR = Path(__file__).resolve().parent
+DETECTION_DIR = SCRIPT_DIR.parent
+if str(DETECTION_DIR) not in sys.path:
+    sys.path.append(str(DETECTION_DIR))
 
 
 def parse_args(args=None):
     parser = argparse.ArgumentParser(
         description='Calibrate a RealSense or ZED camera against mocap.'
-    )
-    parser.add_argument(
-        '--camera',
-        choices=('realsense', 'zed'),
-        default=None,
-        help='camera type (default: realsense)',
-    )
-    parser.add_argument(
-        '-o',
-        '--output-file',
-        type=Path,
-        default=None,
-        metavar='PATH',
-        help=(
-            'calibration JSON output path; parent directories are created '
-            'automatically (default: output_file ROS parameter)'
-        ),
     )
     return parser.parse_known_args(args)
 
@@ -135,7 +117,7 @@ def make_depth_display(depth_image, depth_scale):
 
 
 class CharucoMocapHandEye(Node):
-    def __init__(self, camera_type_override=None, output_file_override=None):
+    def __init__(self):
         super().__init__('charuco_mocap_handeye_calibrator')
 
         # Board parameters: identical to ChArUco.py.
@@ -149,10 +131,6 @@ class CharucoMocapHandEye(Node):
 
         # Camera parameters.
         self.declare_parameter('camera_type', 'realsense')
-        self.declare_parameter('camera_serial', '')
-        self.declare_parameter('width', 640)
-        self.declare_parameter('height', 480)
-        self.declare_parameter('fps', 60)
         self.declare_parameter('show_image', True)
 
         # Mocap and time-pairing parameters.
@@ -174,7 +152,6 @@ class CharucoMocapHandEye(Node):
 
         self.declare_parameter('min_samples', 12)
         self.declare_parameter('max_outlier_fraction', 0.25)
-        self.declare_parameter('output_file', 'handeye_calibration.json')
 
         self.squares_x = int(self.get_parameter('squares_x').value)
         self.squares_y = int(self.get_parameter('squares_y').value)
@@ -191,13 +168,8 @@ class CharucoMocapHandEye(Node):
             self.get_parameter('max_reprojection_error_px').value
         )
         self.show_image = bool(self.get_parameter('show_image').value)
-        configured_camera_type = str(
-            self.get_parameter('camera_type').value
-        )
         camera_type = str(
-            camera_type_override
-            if camera_type_override is not None
-            else configured_camera_type
+            self.get_parameter('camera_type').value
         ).strip().lower()
         camera_type_aliases = {
             'realsense': 'realsense',
@@ -209,6 +181,12 @@ class CharucoMocapHandEye(Node):
                 'camera_type must be realsense (or rs) or zed'
             )
         self.camera_type = camera_type_aliases[camera_type]
+        if self.camera_type == 'realsense':
+            self.camera_resolution = '640x480'
+            self.camera_fps = 60
+        else:
+            self.camera_resolution = 'SVGA'
+            self.camera_fps = 120
         self.camera_optical_frame = (
             'RealSense color optical frame'
             if self.camera_type == 'realsense'
@@ -265,15 +243,9 @@ class CharucoMocapHandEye(Node):
         self.max_outlier_fraction = float(
             self.get_parameter('max_outlier_fraction').value
         )
-        configured_output_file = str(
-            self.get_parameter('output_file').value
-        )
-        self.output_file = str(
-            output_file_override
-            if output_file_override is not None
-            else configured_output_file
-        )
-        self.output_path = Path(self.output_file).expanduser().resolve()
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.output_dir = SCRIPT_DIR / f'{self.camera_type}_{timestamp}'
+        self.output_path = self.output_dir / 'handeye_calibration.json'
 
         if self.squares_x < 2 or self.squares_y < 2:
             raise ValueError('squares_x and squares_y must be at least 2')
@@ -290,16 +262,8 @@ class CharucoMocapHandEye(Node):
         self.latest_pair_delta_ms = None
         self.latest_rmse_px = None
 
-        self.camera_serial = str(
-            self.get_parameter('camera_serial').value
-        ).strip()
         self.realsense_sdk = None
-        self.camera = self.create_camera(
-            width=int(self.get_parameter('width').value),
-            height=int(self.get_parameter('height').value),
-            fps=int(self.get_parameter('fps').value),
-            serial_number=self.camera_serial or None,
-        )
+        self.camera = self.create_camera()
         if not self.camera.start():
             raise RuntimeError(f'{self.camera_type} camera start failed')
 
@@ -315,11 +279,14 @@ class CharucoMocapHandEye(Node):
             self.mocap_callback,
             qos_profile_sensor_data,
         )
-        fps = int(self.get_parameter('fps').value)
-        self.timer = self.create_timer(1.0 / max(1, fps), self.process_frame)
+        self.timer = self.create_timer(
+            1.0 / self.camera_fps, self.process_frame
+        )
 
         self.get_logger().info(
-            f'camera={self.camera_type}; subscribed to /mocap_data; '
+            f'camera={self.camera_type} '
+            f'({self.camera_resolution}@{self.camera_fps} FPS); '
+            f'subscribed to /mocap_data; '
             f'rigid_id={self.rigid_id}; '
             f'translation scale={self.mocap_position_scale:g}'
         )
@@ -337,7 +304,7 @@ class CharucoMocapHandEye(Node):
         )
         self.key_thread.start()
 
-    def create_camera(self, width, height, fps, serial_number):
+    def create_camera(self):
         if self.camera_type == 'realsense':
             try:
                 import pyrealsense2 as rs
@@ -348,23 +315,17 @@ class CharucoMocapHandEye(Node):
                     'RealSense camera wrapper'
                 ) from error
             self.realsense_sdk = rs
-            camera_class = RealSenseCamera
-        else:
-            try:
-                from device.zed_camera import ZEDCamera
-            except ImportError as error:
-                raise RuntimeError(
-                    'camera_type=zed requires the ZED SDK Python API '
-                    '(pyzed.sl) and the ZED camera wrapper'
-                ) from error
-            camera_class = ZEDCamera
+            return RealSenseCamera(width=640, height=480, fps=60)
 
-        return camera_class(
-            width=width,
-            height=height,
-            fps=fps,
-            serial_number=serial_number,
-        )
+        try:
+            import pyzed.sl as sl
+            from device.zed_camera import ZEDCamera
+        except ImportError as error:
+            raise RuntimeError(
+                'camera_type=zed requires the ZED SDK Python API '
+                '(pyzed.sl) and the ZED camera wrapper'
+            ) from error
+        return ZEDCamera(resolution=sl.RESOLUTION.SVGA, fps=120)
 
     def initialize_detector(self):
         self.camera_matrix = (
@@ -1082,7 +1043,8 @@ class CharucoMocapHandEye(Node):
             },
             'camera': {
                 'type': self.camera_type,
-                'requested_serial': self.camera_serial,
+                'configured_resolution': self.camera_resolution,
+                'configured_fps': self.camera_fps,
                 'optical_frame': self.camera_optical_frame,
                 'matrix': self.camera_matrix.tolist(),
                 'distortion_model': self.distortion_model,
@@ -1142,14 +1104,11 @@ class CharucoMocapHandEye(Node):
 
 
 def main(args=None):
-    cli_args, ros_args = parse_args(args)
+    _, ros_args = parse_args(args)
     rclpy.init(args=ros_args)
     node = None
     try:
-        node = CharucoMocapHandEye(
-            camera_type_override=cli_args.camera,
-            output_file_override=cli_args.output_file
-        )
+        node = CharucoMocapHandEye()
         rclpy.spin(node)
     except KeyboardInterrupt:
         pass

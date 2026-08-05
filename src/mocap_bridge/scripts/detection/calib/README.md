@@ -70,7 +70,8 @@ source install/setup.bash
 2. 将 ChArUco 板固定在动捕空间中，保证相机移动过程中标定板本身不动。
 3. 确认动捕刚体 ID、位姿方向和位置单位。本项目默认刚体 ID 为 `4`，位置单位为毫米，SDK 输出的
    位姿按 `rigid_to_world` 使用。
-4. 确认相机能在所选分辨率和帧率下同时开启彩色流与深度流，默认配置为 `640×480@60 Hz`。
+4. 确认相机能按脚本的固定配置同时开启彩色流与深度流：RealSense 使用
+   `640×480@60 Hz`，ZED 使用原生 `SVGA@120 Hz`。
 5. 保证曝光充足、图像清晰，尽量避免反光、运动模糊和标定板占画面过小。
 
 标定时应保持以下装配关系：
@@ -107,8 +108,12 @@ ros2 topic echo /mocap_data --once
 
 ### 2. 启动标定脚本
 
-在第二个交互式终端中进入本目录运行。进入本目录后，默认输出会保存为本目录下的
-`handeye_calibration.json`。
+在第二个交互式终端中运行脚本。输出路径根据脚本文件自身的位置生成，与启动命令的当前工作目录无关。
+例如使用 RealSense 在 `2026-08-05 14:30:20` 启动时，结果保存为：
+
+```text
+<脚本所在目录>/realsense_20260805_143020/handeye_calibration.json
+```
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -116,9 +121,8 @@ source install/setup.bash
 cd src/mocap_bridge/scripts/detection/calib
 
 python3 charuco_mocap_handeye_calib.py \
-  --camera realsense \
-  --output-file ./handeye_calibration.json \
   --ros-args \
+  -p camera_type:=realsense \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world
@@ -128,12 +132,8 @@ python3 charuco_mocap_handeye_calib.py \
 
 ```bash
 python3 charuco_mocap_handeye_calib.py \
-  --camera zed \
-  --output-file ./handeye_calibration_zed.json \
   --ros-args \
-  -p width:=640 \
-  -p height:=480 \
-  -p fps:=60 \
+  -p camera_type:=zed \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world
@@ -151,33 +151,6 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
   -p min_charuco_corners:=18 \
   -p max_reprojection_error_px:=0.5 \
   -p max_pair_delta_sec:=0.015
-```
-
-`-o/--output-file` 用于指定标定 JSON 的保存位置，父目录不存在时会自动创建。例如：
-
-```bash
-python3 charuco_mocap_handeye_calib.py \
-  --camera realsense \
-  -o ~/calibration/handeye_calibration.json \
-  --ros-args -p rigid_id:=4
-```
-
-原有的 ROS 参数 `-p output_file:=...` 仍然可用；同时提供两者时，
-`--output-file` 优先。
-
-相机类型使用与采集、检测脚本相同的 `--camera realsense` 或
-`--camera zed` 进行切换，默认为 `realsense`。原有的 ROS 参数
-`-p camera_type:=...` 仍然兼容；同时提供两者时，`--camera` 优先。
-
-如果连接了多台同类型相机，可通过序列号指定设备：
-
-```bash
-python3 charuco_mocap_handeye_calib.py \
-  --camera zed \
-  --ros-args \
-  -p camera_serial:="相机序列号" \
-  -p rigid_id:=4 \
-  -p mocap_pose_direction:=rigid_to_world
 ```
 
 ## 采样流程
@@ -230,11 +203,11 @@ python3 charuco_mocap_handeye_calib.py \
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `camera_type` | `realsense` | 相机后端：`realsense`（也接受 `rs`）或 `zed` |
-| `camera_serial` | 空 | RealSense 或 ZED 序列号；为空时使用可用设备 |
-| `width` | `640` | 彩色流和深度流宽度 |
-| `height` | `480` | 彩色流和深度流高度 |
-| `fps` | `60` | 彩色流、深度流和处理定时器频率 |
 | `show_image` | `true` | 是否显示检测预览窗口 |
+
+相机图像规格不通过 ROS 参数配置：RealSense 固定构造为
+`RealSenseCamera(width=640, height=480, fps=60)`；ZED 固定构造为
+`ZEDCamera(resolution=sl.RESOLUTION.SVGA, fps=120)`。处理定时器分别使用 60 Hz 和 120 Hz。
 
 ### 动捕与时间配对
 
@@ -263,7 +236,6 @@ python3 charuco_mocap_handeye_calib.py \
 | `duplicate_rotation_deg` | `5.0` | 与上一样本比较时的重复旋转阈值 |
 | `min_samples` | `12` | 计算标定所需的最少已保存位姿数，程序内部下限为 3 |
 | `max_outlier_fraction` | `0.25` | 鲁棒重算时最多允许剔除的样本比例 |
-| `output_file` | `handeye_calibration.json` | 输出路径；相对路径以启动脚本时的当前目录为基准 |
 
 ## 输出文件说明
 
@@ -294,8 +266,9 @@ python3 charuco_mocap_handeye_calib.py \
 - `sample_quality` 中是否存在明显偏大的时间差或 PnP 误差。
 - 外参平移是否与相机和刚体的实际安装距离大致相符。
 
-重新标定会覆盖同名输出文件。更换相机、分辨率、镜头参数或相机与刚体的安装关系后，都应重新标定。
-目录中已有的 JSON 只对应生成它时的硬件和数据，不能直接视为其他设备的有效外参。
+每次启动都会按相机类型和启动时间生成新的输出目录，因此不会覆盖以前的标定文件。更换相机、分辨率、
+镜头参数或相机与刚体的安装关系后，都应重新标定。目录中已有的 JSON 只对应生成它时的硬件和数据，
+不能直接视为其他设备的有效外参。
 
 ## 结果验证
 
@@ -306,7 +279,7 @@ python3 charuco_mocap_handeye_calib.py \
 ```bash
 python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --dir src/mocap_bridge/scripts/data/<数据目录> \
-  --handeye-calib src/mocap_bridge/scripts/detection/calib/handeye_calibration.json
+  --handeye-calib src/mocap_bridge/scripts/detection/calib/<相机类型_时间戳>/handeye_calibration.json
 ```
 
 当前 `plot_auto_calib.py` 使用刚体 `4`，并要求标定结果的
@@ -321,7 +294,7 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
 ```bash
 python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
   --dirs <数据目录1> <数据目录2> <数据目录3> \
-  --input src/mocap_bridge/scripts/detection/calib/handeye_calibration.json \
+  --input src/mocap_bridge/scripts/detection/calib/<相机类型_时间戳>/handeye_calibration.json \
   --output src/mocap_bridge/scripts/detection/calib/handeye_ball_refined.json
 ```
 
