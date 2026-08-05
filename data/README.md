@@ -81,7 +81,7 @@ python3 ~/GithubDoc/LuMoSDK/data/rename.py --help
 
 ```bash
 python3 -m pip install --upgrade modelscope
-modelscope login
+modelscope login --token ms-ac24de51-b5a9-4b81-ac96-300d05f56dc8
 ```
 
 执行 `modelscope login` 后，根据提示输入 ModelScope Access Token。请勿将 Token 直接写入 README 或提交到 Git 仓库。
