@@ -33,6 +33,8 @@ ROS 2 包固定从 `src/mocap_bridge/sdk/lib` 加载 SDK，仓库根目录的独
 
 仓库根目录提供了 [`switch_sdk_arch.sh`](switch_sdk_arch.sh) 切换脚本。自动识别当前平台并切换：
 
+脚本会先确认两处对应架构的源库目录都存在；如果目标 `lib` 已存在，则先将其删除，再复制对应的 `lib_arm` 或 `lib_x86` 并命名为 `lib`。
+
 ```bash
 chmod +x switch_sdk_arch.sh
 ./switch_sdk_arch.sh
