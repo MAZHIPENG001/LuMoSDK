@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-model_path = "/home/ma/GithubDoc/ultralytics/my_model/model/ball/yolo26l-seg/best.pt"
+model_path = "~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/model/ball/yolo26l-seg/best.pt"
 model = YOLO(model_path)
 
 # 导出为 TensorRT engine 格式

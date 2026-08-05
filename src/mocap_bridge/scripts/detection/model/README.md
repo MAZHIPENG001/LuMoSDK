@@ -6,11 +6,17 @@ modelscope login --token ms-ac24de51-b5a9-4b81-ac96-300d05f56dc8
 # 模型
 ## 上传
 ```bash
-modelscope upload   MaZp001/yolo_detection   "$HOME/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/model"
+modelscope upload \
+  MaZp001/yolo_detection \
+  "$HOME/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/model" \
+  --repo-type model
 ```
 ## 下载
 ```bash
-modelscope download --model MaZp001/yolo_detection
+modelscope download \
+  --model MaZp001/yolo_detection \
+  --local_dir ./dir \
+  --repo-type model
 ```
 
 # 数据
@@ -18,7 +24,7 @@ modelscope download --model MaZp001/yolo_detection
 ```bash
 modelscope upload \
   MaZp001/yolo_dataset \
-  "$HOME/GithubDoc/LuMoSDK/datasets/yolo_dataset" \
+  --local_dir "$HOME/GithubDoc/LuMoSDK/datasets/yolo_dataset" \
   --repo-type dataset
 
 # 本地 train.zip 上传到仓库的 data/train.zip：
