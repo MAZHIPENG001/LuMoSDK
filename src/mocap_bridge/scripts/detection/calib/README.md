@@ -143,6 +143,7 @@ python3 charuco_mocap_handeye_calib.py \
 
 ```bash
 python3 charuco_mocap_handeye_calib.py --ros-args \
+  -p camera_type:=zed \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world \
