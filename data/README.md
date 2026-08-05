@@ -18,20 +18,20 @@
 运行 `data_save.py`，并将图片保存目录作为第一个参数传入。默认使用 RealSense：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py /path/to/save_dir
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py /path/to/save_dir
 ```
 
 例如，将图片保存到当前目录下的 `pic_red_ball`：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_red_ball
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_red_ball
 ```
 
 使用 ZED 相机时，增加 `--camera zed`：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py \
-  ./data/pic_red_ball \
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py \
+  ./data/pic_ball \
   --camera zed
 ```
 
@@ -40,13 +40,13 @@ python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py \
 使用 `--frequency`（或 `-f`）设置每秒保存的图片数量。例如，以 5 Hz 的频率保存图片：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_red_ball --frequency 5
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_red_ball --frequency 5
 ```
 
 也可以和相机类型一起指定：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py \
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py \
   ./data/pic_red_ball \
   --camera zed \
   --frequency 5
@@ -57,7 +57,7 @@ python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py \
 如果不传入目录，图片默认保存到 `data/pic_red_ball`：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py --frequency 10
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py --frequency 10
 ```
 
 运行后可使用以下按键：
@@ -75,19 +75,19 @@ python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py --frequency 10
 运行 `rename.py`，并将待处理的图片目录作为第一个参数传入：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/rename.py /path/to/image_dir
+python3 ~/GithubDoc/LuMoSDK/data/rename.py /path/to/image_dir
 ```
 
 例如：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/rename.py ./pic_red_ball
+python3 ~/GithubDoc/LuMoSDK/data/rename.py ./pic_red_ball
 ```
 
 如果不传入目录，默认处理当前工作目录下的 `pic`：
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/rename.py
+python3 ~/GithubDoc/LuMoSDK/data/rename.py
 ```
 
 脚本只处理名称符合 `pic数字.jpg` 格式的文件，并按原编号顺序重命名为 `pic0001.jpg`、`pic0002.jpg` 等连续编号。
@@ -95,8 +95,8 @@ python3 /home/ma/GithubDoc/LuMoSDK/data/rename.py
 ## 3. 查看帮助
 
 ```bash
-python3 /home/ma/GithubDoc/LuMoSDK/data/data_save.py --help
-python3 /home/ma/GithubDoc/LuMoSDK/data/rename.py --help
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py --help
+python3 ~/GithubDoc/LuMoSDK/data/rename.py --help
 ```
 
 ## 4. ModelScope 数据集上传与下载
@@ -114,11 +114,11 @@ modelscope login
 
 ### 4.2 上传全部数据
 
-以下命令会递归上传 `/home/ma/GithubDoc/LuMoSDK/data` 下的全部文件和子目录，并保存到数据集仓库根目录：
+以下命令会递归上传 `~/GithubDoc/LuMoSDK/data` 下的全部文件和子目录，并保存到数据集仓库根目录：
 
 ```bash
 modelscope upload MaZp001/ball_detection \
-  /home/ma/GithubDoc/LuMoSDK/data \
+  ~/GithubDoc/LuMoSDK/data \
   --repo-type dataset \
   --commit-message "Update ball detection dataset"
 ```
@@ -132,7 +132,7 @@ modelscope upload MaZp001/ball_detection \
 ```bash
 modelscope download MaZp001/ball_detection \
   --repo-type dataset \
-  --local-dir /home/ma/GithubDoc/LuMoSDK/data_download
+  --local-dir ~/GithubDoc/LuMoSDK/data_download
 ```
 
-如果需要直接同步到当前 `data` 目录，可以将 `--local-dir` 后的路径改为 `/home/ma/GithubDoc/LuMoSDK/data`。执行前请确认本地同名文件可以被更新。
+如果需要直接同步到当前 `data` 目录，可以将 `--local-dir` 后的路径改为 `~/GithubDoc/LuMoSDK/data`。执行前请确认本地同名文件可以被更新。

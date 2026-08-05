@@ -154,7 +154,14 @@ def main() -> None:
                         next_save_time += missed_intervals * save_interval
 
             key = cv2.waitKey(1) & 0xFF
-            if key == ord("c") and not is_recording:
+            if key == ord(" "):
+                image_path = save_dir / f"pic{pic_counter:03d}.jpg"
+                if cv2.imwrite(str(image_path), color_image):
+                    print(f"已保存: {image_path}")
+                    pic_counter += 1
+                else:
+                    print(f"保存失败: {image_path}", file=sys.stderr)
+            elif key == ord("c") and not is_recording:
                 print("\033[92m=== 开始记录图片 ===\033[0m")
                 is_recording = True
                 next_save_time = time.monotonic()
