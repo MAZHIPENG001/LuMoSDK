@@ -1,6 +1,6 @@
 # 登录
 ```bash
-modelscope login --token ms-ac24de51-b5a9-4b81-ac96-300d05f56dc8
+modelscope login --token ms-***********************
 ```
 
 # 模型
@@ -14,8 +14,9 @@ modelscope upload \
 ## 下载
 ```bash
 modelscope download \
+  ball/yolo26l_seg_768_b16_zed/best.pt \
   --model MaZp001/yolo_detection \
-  --local_dir ./dir \
+  --local_dir . \
   --repo-type model
 ```
 
