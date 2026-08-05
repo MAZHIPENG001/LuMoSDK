@@ -68,7 +68,7 @@ def create_camera(camera_type: str):
     if camera_type == "realsense":
         from device.realsense_camera import RealSenseCamera
 
-        return RealSenseCamera(width=640, height=480, fps=120), "RealSense"
+        return RealSenseCamera(width=640, height=480, fps=60), "RealSense"
 
     from device.zed_camera import ZEDCamera
     import pyzed.sl as sl
