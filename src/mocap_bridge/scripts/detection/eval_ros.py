@@ -1,20 +1,51 @@
 #!/usr/bin/env python3
+import argparse
+
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PointStamped
 from builtin_interfaces.msg import Time as TimeMsg
 import cv2
 from ultralytics import YOLO
-from device.realsense_camera import RealSenseCamera
 import time
 from record.target_tracker import TargetTracker
 from sphere_fit import fit_fixed_radius_sphere
 import numpy as np
-# from device.zed_camera import ZEDCamera
-# import pyzed.sl as sl
 
 # 建议加上 half=True 开启半精度(FP16)推理，速度更快
-# yolo export model=/home/ma/GithubDoc/ultralytics/my_model/model/red_ball/yolo26l-seg/best.pt format=engine task=segment half=True
+# yolo export model=~/GithubDoc/ultralytics/my_model/model/red_ball/yolo26l-seg/best.pt format=engine task=segment half=True
+
+
+def parse_args(args=None):
+    parser = argparse.ArgumentParser(
+        description="使用 RealSense 或 ZED 相机发布球位置。"
+    )
+    parser.add_argument(
+        "--camera",
+        choices=("realsense", "zed"),
+        default="realsense",
+        help="相机类型（默认：realsense）",
+    )
+    return parser.parse_known_args(args)
+
+
+def create_camera(camera_type):
+    if camera_type == "realsense":
+        from device.realsense_camera import RealSenseCamera
+
+        return (
+            RealSenseCamera(width=640, height=480, fps=120),
+            "RealSense",
+        )
+
+    from device.zed_camera import ZEDCamera
+    import pyzed.sl as sl
+
+    return (
+        ZEDCamera(resolution=sl.RESOLUTION.HD1200, fps=120),
+        "ZED",
+    )
+
 
 class KalmanFilter3D:
     def __init__(self, dt=1.0 / 60.0):
@@ -159,7 +190,7 @@ def compensate_ball_radius(surf_x, surf_y, surf_z, ball_radius=0.115):
 
 
 class BallPublisher(Node):
-    def __init__(self):
+    def __init__(self, camera_type="realsense"):
         super().__init__('ball_publisher')
         # 创建两个发布者：表面点与球心
         self.surf_pub = self.create_publisher(PointStamped, '/ball_surface', 10)
@@ -173,11 +204,10 @@ class BallPublisher(Node):
         self.model = YOLO(model_path,task='segment')
 
         # 启动相机
-        self.get_logger().info("启动 RealSense 相机...")
-        self.camera = RealSenseCamera(width=640, height=480)
-        # self.camera = RealSenseCamera(width=640, height=480,fps=60)
-        # self.camera = ZEDCamera(resolution=sl.RESOLUTION.HD720, fps=60)
-        self.camera.start()
+        self.camera, camera_name = create_camera(camera_type)
+        self.get_logger().info(f"启动 {camera_name} 相机...")
+        if not self.camera.start():
+            raise RuntimeError(f"{camera_name} 相机启动失败")
 
         # 轨迹记录（可选，保留）
         self.tracker=None
@@ -377,8 +407,9 @@ class BallPublisher(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = BallPublisher()
+    cli_args, ros_args = parse_args(args)
+    rclpy.init(args=ros_args)
+    node = BallPublisher(camera_type=cli_args.camera)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

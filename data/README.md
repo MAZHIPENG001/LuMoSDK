@@ -36,6 +36,13 @@ python3 ~/GithubDoc/LuMoSDK/data/data_save.py \
 ```
 
 `--camera` 可选值为 `realsense` 和 `zed`，默认值为 `realsense`。
+两个相机后端使用以下固定采集配置：
+
+- RealSense：`640×480 @ 120 FPS`。
+- ZED：`HD1200 @ 120 FPS`，对应
+  `ZEDCamera(resolution=sl.RESOLUTION.HD1200, fps=120)`。
+
+脚本只导入当前选择的相机驱动。
 
 使用 `--frequency`（或 `-f`）设置每秒保存的图片数量。例如，以 5 Hz 的频率保存图片：
 

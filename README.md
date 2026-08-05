@@ -92,11 +92,28 @@ ros2 run mocap_bridge mocap_publisher
 
 ### 发布相机数据
 
+进入检测脚本目录：
+
 ```bash
 source /opt/ros/humble/setup.bash
 cd src/mocap_bridge/scripts/detection
-python3 eval_ros.py
 ```
+
+使用 RealSense（默认），采集配置为 `640×480 @ 120 FPS`：
+
+```bash
+python3 eval_ros.py --camera realsense
+```
+
+使用 ZED，采集配置为 `HD1200 @ 120 FPS`：
+
+```bash
+python3 eval_ros.py --camera zed
+```
+
+`--camera` 可选值为 `realsense` 和 `zed`。程序只导入当前选择的相机驱动，
+因此选择 ZED 时不会导入 `pyrealsense2`，选择 RealSense 时不会导入
+`pyzed.sl`。
 
 ### 订阅数据
 

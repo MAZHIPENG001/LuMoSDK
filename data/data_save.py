@@ -68,13 +68,13 @@ def create_camera(camera_type: str):
     if camera_type == "realsense":
         from device.realsense_camera import RealSenseCamera
 
-        return RealSenseCamera(width=640, height=480), "RealSense"
+        return RealSenseCamera(width=640, height=480, fps=120), "RealSense"
 
     from device.zed_camera import ZEDCamera
     import pyzed.sl as sl
 
     # return ZEDCamera(width=640, height=480), "ZED"
-    return ZEDCamera(resolution=sl.RESOLUTION.HD1200,fps=60), "ZED"
+    return ZEDCamera(resolution=sl.RESOLUTION.HD1200, fps=120), "ZED"
 
 
 def make_depth_display(depth_image, depth_scale: float, cv2):
