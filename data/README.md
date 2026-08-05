@@ -21,10 +21,10 @@
 python3 ~/GithubDoc/LuMoSDK/data/data_save.py /path/to/save_dir
 ```
 
-例如，将图片保存到当前目录下的 `pic_red_ball`：
+例如，将图片保存到当前目录下的 `pic_ball`：
 
 ```bash
-python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_red_ball
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_ball
 ```
 
 使用 ZED 相机时，增加 `--camera zed`：
@@ -40,21 +40,21 @@ python3 ~/GithubDoc/LuMoSDK/data/data_save.py \
 使用 `--frequency`（或 `-f`）设置每秒保存的图片数量。例如，以 5 Hz 的频率保存图片：
 
 ```bash
-python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_red_ball --frequency 5
+python3 ~/GithubDoc/LuMoSDK/data/data_save.py ./data/pic_ball --frequency 5
 ```
 
 也可以和相机类型一起指定：
 
 ```bash
 python3 ~/GithubDoc/LuMoSDK/data/data_save.py \
-  ./data/pic_red_ball \
+  ./data/pic_ball \
   --camera zed \
   --frequency 5
 ```
 
 保存频率必须大于 0，默认值为 10 Hz。实际频率不会超过相机输出帧率，并可能受到图像处理和磁盘写入速度的影响。
 
-如果不传入目录，图片默认保存到 `data/pic_red_ball`：
+如果不传入目录，图片默认保存到 `data/pic_ball`：
 
 ```bash
 python3 ~/GithubDoc/LuMoSDK/data/data_save.py --frequency 10
@@ -81,7 +81,7 @@ python3 ~/GithubDoc/LuMoSDK/data/rename.py /path/to/image_dir
 例如：
 
 ```bash
-python3 ~/GithubDoc/LuMoSDK/data/rename.py ./pic_red_ball
+python3 ~/GithubDoc/LuMoSDK/data/rename.py ./pic_ball
 ```
 
 如果不传入目录，默认处理当前工作目录下的 `pic`：
@@ -127,12 +127,12 @@ modelscope upload MaZp001/ball_detection \
 
 ### 4.3 下载全部数据
 
-为避免覆盖当前 `data` 目录中的文件，以下命令默认下载到同级的 `data_download` 目录：
+为避免覆盖当前 `data` 目录中的文件，以下命令默认下载到同级的 `data_modelscope` 目录：
 
 ```bash
 modelscope download MaZp001/ball_detection \
   --repo-type dataset \
-  --local-dir ~/GithubDoc/LuMoSDK/data_download
+  --local-dir ~/GithubDoc/LuMoSDK/data_modelscope
 ```
 
 如果需要直接同步到当前 `data` 目录，可以将 `--local-dir` 后的路径改为 `~/GithubDoc/LuMoSDK/data`。执行前请确认本地同名文件可以被更新。

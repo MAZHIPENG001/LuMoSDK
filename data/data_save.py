@@ -134,8 +134,8 @@ def main() -> None:
                 cv2,
             )
 
-            cv2.imshow(f"{camera_name} - Color", color_image)
-            cv2.imshow(f"{camera_name} - Depth", depth_display)
+            combined_display = cv2.hconcat([color_image, depth_display])
+            cv2.imshow(f"{camera_name} - RGB + Depth", combined_display)
 
             if is_recording:
                 current_time = time.monotonic()
