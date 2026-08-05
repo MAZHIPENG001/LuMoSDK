@@ -189,6 +189,24 @@ def compensate_ball_radius(surf_x, surf_y, surf_z, ball_radius=0.115):
     return float(p_center[0]), float(p_center[1]), float(p_center[2])
 
 
+def make_depth_display(depth_image, depth_scale):
+    """将深度图转换为 0～5 米的伪彩色预览图。"""
+    max_preview_depth_m = 5.0
+    depth_m = np.asarray(depth_image, dtype=np.float32) * float(depth_scale)
+    valid = np.isfinite(depth_m) & (depth_m > 0.0)
+
+    depth_8bit = np.zeros(depth_m.shape, dtype=np.uint8)
+    depth_8bit[valid] = np.clip(
+        depth_m[valid] * (255.0 / max_preview_depth_m),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
+
+    depth_display = cv2.applyColorMap(depth_8bit, cv2.COLORMAP_TURBO)
+    depth_display[~valid] = 0
+    return depth_display
+
+
 class BallPublisher(Node):
     def __init__(self, camera_type="realsense"):
         super().__init__('ball_publisher')
@@ -204,10 +222,10 @@ class BallPublisher(Node):
         self.model = YOLO(model_path,task='segment')
 
         # 启动相机
-        self.camera, camera_name = create_camera(camera_type)
-        self.get_logger().info(f"启动 {camera_name} 相机...")
+        self.camera, self.camera_name = create_camera(camera_type)
+        self.get_logger().info(f"启动 {self.camera_name} 相机...")
         if not self.camera.start():
-            raise RuntimeError(f"{camera_name} 相机启动失败")
+            raise RuntimeError(f"{self.camera_name} 相机启动失败")
 
         # 轨迹记录（可选，保留）
         self.tracker=None
@@ -229,8 +247,10 @@ class BallPublisher(Node):
         color_image, depth_image, frame_metadata = self.camera.get_images(
             return_metadata=True
         )
-        if color_image is None:
+        if color_image is None or depth_image is None:
             return
+
+        display_image = color_image.copy()
 
         capture_time_ns = frame_metadata['capture_time_ns']
         if capture_time_ns is None:
@@ -248,6 +268,7 @@ class BallPublisher(Node):
         if len(results[0].boxes) > 0:
             max_conf_idx = results[0].boxes.conf.argmax().item()
             best_result = results[0][max_conf_idx]
+            display_image = best_result.plot()
             box = best_result.boxes.xyxy[0].cpu().numpy()
             mask_data = best_result.masks.data[0].cpu().numpy().astype(bool)
 
@@ -256,8 +277,6 @@ class BallPublisher(Node):
             eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
             mask_data = eroded_mask.astype(bool)
 
-            mask_display = (mask_data * 255).astype(np.uint8)
-            cv2.imshow("YOLO Seg Mask", mask_display)
             u, v = ball_center(mask_data)
             if u is None and v is None:
                 u, v = int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2)
@@ -372,7 +391,7 @@ class BallPublisher(Node):
                         self.tracker.update(real_x, real_y, real_z, center_x, center_y, center_z)
 
                     # 可视化
-                    annotated = best_result.plot()
+                    annotated = display_image
                     cv2.circle(annotated, (u, v), 5, (0, 0, 255), -1)
                     cv2.putText(annotated, f"z: {real_z*1000:.6f}mm", (u-20, v-15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
                     cv2.putText(annotated, f"Center Z: {center_z * 1000:.6f}mm", (u-20, v+20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
@@ -386,16 +405,28 @@ class BallPublisher(Node):
                             (0, 255, 255),
                             2,
                         )
-                    cv2.imshow("Detection", annotated)
+                    display_image = annotated
             else:
                 self.get_logger().warn("掩码内无有效深度点！")
-                cv2.imshow("Detection", best_result.plot())
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                exit(0)
-        else:
-            cv2.imshow("Detection", color_image)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                exit(0)
+                display_image = best_result.plot()
+
+        depth_display = make_depth_display(
+            depth_image,
+            self.camera.depth_scale,
+        )
+        if depth_display.shape[:2] != display_image.shape[:2]:
+            depth_display = cv2.resize(
+                depth_display,
+                (display_image.shape[1], display_image.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+        combined_display = cv2.hconcat([display_image, depth_display])
+        cv2.imshow(
+            f"{self.camera_name} - Detection + Depth",
+            combined_display,
+        )
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            exit(0)
 
     def destroy_node(self):
         self.camera.stop()
