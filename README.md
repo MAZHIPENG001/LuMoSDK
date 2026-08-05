@@ -156,9 +156,13 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py --dir /path/to/data
 ```bash
 python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib \
-  src/mocap_bridge/scripts/detection/calib/handeye_ball_refined_ralsensed435.json
+  src/mocap_bridge/scripts/detection/calib/calib_realsense/handeye_ball_refined_ralsensed435.json
 ```
 
 ## 其他工具
 
-图像采集、批量重命名及 ModelScope 数据集操作说明见 [`data/README.md`](data/README.md)。
+项目内其他工具的详细使用说明如下：
+
+- [图像数据工具](data/README.md)：使用 RealSense 或 ZED 采集图像、批量重命名图片，以及上传和下载 ModelScope 数据集。
+- [ChArUco 手眼标定工具](src/mocap_bridge/scripts/detection/calib/README.md)：标定 RealSense 或 ZED 相机光学坐标系与动捕刚体坐标系之间的固定外参。
+- [检测模型与数据集工具](src/mocap_bridge/scripts/detection/model/README.md)：通过 ModelScope 上传、下载 YOLO 检测模型及数据集。
