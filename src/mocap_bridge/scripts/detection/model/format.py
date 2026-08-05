@@ -8,4 +8,10 @@ model = YOLO(model_path)
 # format="engine": 指定输出格式为 TensorRT
 # half=True: 启用 FP16 以提升推理速度
 # device=0: 指定使用第一张 GPU 进行导出计算
-model.export(format="engine", half=True, device=0)
+# model.export(format="engine", half=True, device=0)
+model.export(
+    format="engine",
+    imgsz=768,
+    quantize=16,
+    device=0,
+)
