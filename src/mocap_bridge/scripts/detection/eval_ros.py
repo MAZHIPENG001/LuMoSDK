@@ -42,7 +42,7 @@ def create_camera(camera_type):
     import pyzed.sl as sl
 
     return (
-        ZEDCamera(resolution=sl.RESOLUTION.HD1200, fps=120),
+        ZEDCamera(resolution=sl.RESOLUTION.SVGA, fps=120),
         "ZED",
     )
 
