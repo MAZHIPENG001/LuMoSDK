@@ -1,3 +1,5 @@
+import argparse
+import platform
 import threading
 import time
 
@@ -20,6 +22,24 @@ _GMSL_STEREO_PROFILES = (
     ("HD1200", 1920, 1200, (15, 30, 60)),
     ("HD1080", 1920, 1080, (15, 30, 60)),
     ("SVGA", 960, 600, (15, 30, 60, 120)),
+)
+
+_KNOWN_MODEL_NAMES = (
+    "ZED",
+    "ZED_M",
+    "ZED2",
+    "ZED2i",
+    "ZED_X",
+    "ZED_XM",
+    "ZED_X_NANO",
+    "ZED_X_HDR",
+    "ZED_X_HDR_MINI",
+    "ZED_X_HDR_MAX",
+    "VIRTUAL_ZED_X",
+    "ZED_XONE_GS",
+    "ZED_XONE_UHD",
+    "ZED_XONE_HDR",
+    "LAST",
 )
 
 
@@ -58,9 +78,12 @@ class ZEDCamera:
 
     ZED depth is registered to the rectified left image and is returned in
     metres, so ``depth_scale`` is 1.0.  ``width`` and ``height`` are accepted
-    for drop-in compatibility.  If that size is not a native ZED mode, the
-    closest native mode is captured and both color and depth are resized
-    together; the exported intrinsics are scaled to the returned image size.
+    for drop-in compatibility.  If that size is not a native ZED mode, the SDK
+    selects a mode compatible with the detected camera and both color and
+    depth are resized together; the exported intrinsics are scaled to the
+    returned image size.
+    For a network stream, the Jetson sender owns the capture mode and this
+    wrapper only controls the returned image size.
     """
 
     _RESOLUTION_SIZES = (
@@ -79,6 +102,8 @@ class ZEDCamera:
         fps=60,
         serial_number=None,
         resolution=None,
+        stream_ip=None,
+        stream_port=30000,
     ):
         """
         初始化 ZED 相机。
@@ -87,15 +112,38 @@ class ZEDCamera:
             width: 返回图像宽度；与 RealSenseCamera 参数兼容
             height: 返回图像高度；与 RealSenseCamera 参数兼容
             fps: 相机帧率
-            serial_number: 相机序列号
+            serial_number: 本机直连相机序列号
             resolution: 可选的 sl.RESOLUTION；指定后默认返回原生分辨率
+            stream_ip: ZED SDK 网络流发送端（通常为 Jetson）的 IP/主机名
+            stream_port: 网络流发送端口，默认 30000
         """
+        if stream_ip is not None:
+            stream_ip = str(stream_ip).strip()
+            if not stream_ip:
+                raise ValueError("stream_ip must not be empty")
+            if serial_number is not None:
+                raise ValueError(
+                    "serial_number cannot be used with a network stream"
+                )
+        stream_port = int(stream_port)
+        if not 1 <= stream_port <= 65535:
+            raise ValueError("stream_port must be between 1 and 65535")
+        if stream_ip is not None and stream_port % 2:
+            raise ValueError("ZED SDK stream_port must be even")
+
         if resolution is None:
             output_width = 640 if width is None else int(width)
             output_height = 480 if height is None else int(height)
             if output_width <= 0 or output_height <= 0:
                 raise ValueError("width and height must be positive")
-            resolution = self._select_resolution(output_width, output_height)
+            # USB ZED and GMSL2 ZED X families have different native modes.
+            # The model is unknown before open(), so AUTO is the only choice
+            # guaranteed not to select (for example) USB-only VGA on ZED X.
+            resolution = getattr(sl.RESOLUTION, "AUTO", None)
+            if resolution is None:
+                resolution = self._select_resolution(
+                    output_width, output_height
+                )
         else:
             if (width is None) != (height is None):
                 raise ValueError(
@@ -116,14 +164,24 @@ class ZEDCamera:
         self.height = output_height or 0
         self.capture_width = 0
         self.capture_height = 0
+        self.capture_fps = 0
+        self.camera_model = None
         self.fps = int(fps)
         self.serial_number = serial_number
         self.resolution = resolution
+        self.stream_ip = stream_ip
+        self.stream_port = stream_port
+        self.input_mode = "stream" if stream_ip is not None else "live"
 
         self.zed = sl.Camera()
         self.init_params = sl.InitParameters()
-        self.init_params.camera_resolution = resolution
-        self.init_params.camera_fps = self.fps
+        if self.input_mode == "stream":
+            # Resolution and FPS are selected on the Jetson sender.  They must
+            # not be presented as receiver-side camera settings.
+            self.init_params.set_from_stream(stream_ip, stream_port)
+        else:
+            self.init_params.camera_resolution = resolution
+            self.init_params.camera_fps = self.fps
         # self.init_params.depth_mode = sl.DEPTH_MODE.ULTRA
         self.init_params.depth_mode = sl.DEPTH_MODE.NEURAL
         self.init_params.coordinate_units = sl.UNIT.METER
@@ -134,7 +192,7 @@ class ZEDCamera:
         ):
             self.init_params.coordinate_system = sl.COORDINATE_SYSTEM.IMAGE
 
-        if serial_number:
+        if serial_number is not None:
             self.init_params.set_from_serial_number(int(serial_number))
 
         self.depth_scale = 1.0
@@ -198,12 +256,33 @@ class ZEDCamera:
             print(
                 f"\033[92m相机serial_number=={actual_serial}   启动成功\033[0m"
             )
+            if self.input_mode == "stream":
+                print(
+                    "\033[96m输入源: ZED SDK 网络流 "
+                    f"{self.stream_ip}:{self.stream_port}\033[0m"
+                )
+            else:
+                print("\033[96m输入源: 本机物理相机\033[0m")
+            print(
+                "\033[96m实际相机配置: "
+                f"{_model_name(self.camera_model)}, "
+                f"{self.capture_width}x{self.capture_height} "
+                f"@ {self.capture_fps} FPS\033[0m"
+            )
             print(f"\033[96m深度标尺: {self.depth_scale}\033[0m")
             self._configure_camera_settings()
 
             c_fx, c_fy, c_cx, c_cy = self.get_color_intrinsics()
             d_fx, d_fy, d_cx, d_cy = self.get_depth_intrinsics()
             self.camera_config = {
+                "camera": {
+                    "model": _model_name(self.camera_model),
+                    "serial_number": self.serial_number,
+                    "input_mode": self.input_mode,
+                    "capture_width": self.capture_width,
+                    "capture_height": self.capture_height,
+                    "capture_fps": self.capture_fps,
+                },
                 "intrinsics": {
                     "color": {
                         "fx": c_fx,
@@ -240,6 +319,7 @@ class ZEDCamera:
         return True
 
     def _initialize_intrinsics(self, cam_info):
+        self.camera_model = getattr(cam_info, "camera_model", "未知")
         camera_configuration = getattr(
             cam_info, "camera_configuration", None
         )
@@ -252,6 +332,7 @@ class ZEDCamera:
         if resolution is not None:
             self.capture_width = int(getattr(resolution, "width", 0))
             self.capture_height = int(getattr(resolution, "height", 0))
+        self.capture_fps = int(getattr(camera_configuration, "fps", 0))
 
         calibration = camera_configuration.calibration_parameters
         left_camera = calibration.left_cam
@@ -718,12 +799,84 @@ class ZEDCamera:
             cv2.imwrite(save_path, color_image)
 
 
+def _model_name(camera_model):
+    """Return a stable model name across PyZED enum implementations."""
+    enum_name = getattr(camera_model, "name", None)
+    if enum_name:
+        return str(enum_name)
+    model_enum = getattr(sl, "MODEL", None)
+    if model_enum is not None:
+        for known_name in _KNOWN_MODEL_NAMES:
+            known_value = getattr(model_enum, known_name, None)
+            if known_value is not None and camera_model == known_value:
+                return known_name
+    return str(camera_model).rsplit(".", 1)[-1]
+
+
+def _model_details(camera_model):
+    """Classify a model without guessing that every unknown model is USB."""
+    model_name = _model_name(camera_model)
+    normalized = "".join(
+        character if character.isalnum() else "_"
+        for character in model_name.upper()
+    )
+    is_x_one = "XONE" in normalized or "X_ONE" in normalized
+    is_zed_x = "ZED_X" in normalized or normalized.startswith("ZEDX")
+
+    if is_x_one:
+        return model_name, "GMSL2（单目，经采集卡接入 Jetson）", ()
+    if "VIRTUAL" in normalized:
+        return model_name, "虚拟 ZED 双目输入", ()
+    if is_zed_x and "HDR" in normalized:
+        # HDR models have a different mode table.  Do not report the classic
+        # ZED X table as if the SDK queried it from this device.
+        return model_name, "GMSL2（经采集卡接入 Jetson）", ()
+    if is_zed_x:
+        return (
+            model_name,
+            "GMSL2（经采集卡接入 Jetson）",
+            _GMSL_STEREO_PROFILES,
+        )
+
+    usb_models = {
+        "ZED",
+        "ZED_M",
+        "ZEDM",
+        "ZED_2",
+        "ZED2",
+        "ZED_2I",
+        "ZED2I",
+        "ZED_MINI",
+    }
+    if normalized in usb_models:
+        return model_name, "USB 3.x（本机直连）", _USB_STEREO_PROFILES
+    return model_name, "未知（SDK 未提供接口类型）", ()
+
+
+def _profiles_from_source(profile_source):
+    profiles = []
+    for name, width, height, fps_values in profile_source:
+        # This is a documented model-family table, not a device query.  Avoid
+        # listing enum values unavailable in the installed SDK.
+        if getattr(sl.RESOLUTION, name, None) is None:
+            continue
+        profiles.append(
+            {
+                "resolution": name,
+                "width": width,
+                "height": height,
+                "fps": list(fps_values),
+            }
+        )
+    return profiles
+
+
 def list_devices():
-    """列出当前连接的 ZED 设备。"""
+    """列出当前主机物理连接的 ZED 设备（不包含网络流）。"""
     devices = sl.Camera.get_device_list()
-    print("检测到的ZED设备:")
+    print("当前主机检测到的物理 ZED 设备:")
     if not devices:
-        print("\033[91m未检测到任何设备\033[0m")
+        print("\033[91m未检测到本机物理设备\033[0m")
     for index, device in enumerate(devices):
         print(
             f"\033[92m设备 {index}: {device.camera_model}, "
@@ -732,76 +885,63 @@ def list_devices():
         )
 
 
-def list_camera_capabilities(serial_number=None):
-    """打印并返回已连接 ZED 相机的分辨率、帧率及设备信息。
+def _stream_value(stream, *names, default=None):
+    for name in names:
+        value = getattr(stream, name, None)
+        if value is not None:
+            return value
+    return default
 
-    参数:
-        serial_number: 可选的相机序列号；指定后只显示该设备
 
-    返回:
-        包含 ``sdk_version`` 和 ``devices`` 的字典。每个设备的
-        ``profiles`` 给出原生单目图像的分辨率及其支持帧率。
+def _get_streaming_devices():
+    get_streams = getattr(sl.Camera, "get_streaming_device_list", None)
+    if get_streams is None:
+        return [], "当前 PyZED 版本不支持网络流发现"
+    try:
+        return list(get_streams()), None
+    except Exception as error:
+        return [], str(error)
 
-    注意:
-        ZED SDK 没有提供类似 RealSense stream profile 的查询接口，
-        因此分辨率/帧率组合根据 SDK 检测到的相机系列生成。GMSL2
-        多相机共享链路时，实际可用的最高帧率还会受采集卡带宽限制。
+
+def list_camera_capabilities(serial_number=None, include_streams=True):
+    """打印本机物理设备和局域网 ZED SDK 流，返回结构化信息。
+
+    ``sl.Camera.get_device_list()`` 只列举运行此脚本的主机上的
+    物理设备。ZED X 若通过 ZED Link 采集卡连接到 Jetson，而脚本
+    运行在 x86 PC 上，则必须把它作为 ZED SDK 网络流处理，不能把
+    本机设备列表当成 Jetson 的采集卡设备列表。
+
+    ``profiles`` 是按已识别型号给出的官方模式表，并非 SDK 对当前
+    设备的动态查询。网络流的分辨率和帧率由发送端决定，流发现
+    信息本身不包含实际采集模式；连接成功后应读取
+    ``camera_configuration``。
     """
     sdk_version = str(sl.Camera.get_sdk_version())
-    devices = sl.Camera.get_device_list()
+    host_architecture = platform.machine()
     requested_serial = (
         None if serial_number is None else str(serial_number)
     )
-    result = {"sdk_version": sdk_version, "devices": []}
+    result = {
+        "sdk_version": sdk_version,
+        "host_architecture": host_architecture,
+        "devices": [],
+        "streams": [],
+    }
 
     print(f"ZED SDK版本: {sdk_version}")
-    print("检测到的ZED设备及支持的视频模式:")
+    print(f"当前主机架构: {host_architecture}")
+    print("\n当前主机上的物理 ZED 设备:")
 
-    matched_devices = 0
-    for index, device in enumerate(devices):
+    for index, device in enumerate(sl.Camera.get_device_list()):
         device_serial = str(getattr(device, "serial_number", "未知"))
-        if (
-            requested_serial is not None
-            and device_serial != requested_serial
-        ):
+        if requested_serial is not None and device_serial != requested_serial:
             continue
 
-        matched_devices += 1
         camera_model = getattr(device, "camera_model", "未知")
-        model_name = str(camera_model).rsplit(".", 1)[-1]
-        normalized_model = model_name.upper().replace("-", "_")
-
-        # ZED X One is monocular and cannot be used by this stereo/depth
-        # wrapper.  Other ZED X variants use the GMSL2 video modes.
-        is_x_one = "XONE" in normalized_model or "X_ONE" in normalized_model
-        is_gmsl_stereo = (
-            ("ZED_X" in normalized_model or "ZEDX" in normalized_model)
-            and not is_x_one
+        model_name, camera_interface, profile_source = _model_details(
+            camera_model
         )
-        if is_x_one:
-            connection = "GMSL2（单目）"
-            profile_source = ()
-        elif is_gmsl_stereo:
-            connection = "GMSL2"
-            profile_source = _GMSL_STEREO_PROFILES
-        else:
-            connection = "USB 3.0"
-            profile_source = _USB_STEREO_PROFILES
-
-        profiles = []
-        for name, width, height, fps_values in profile_source:
-            # Do not advertise modes absent from the installed SDK version.
-            if getattr(sl.RESOLUTION, name, None) is None:
-                continue
-            profiles.append(
-                {
-                    "resolution": name,
-                    "width": width,
-                    "height": height,
-                    "fps": list(fps_values),
-                }
-            )
-
+        profiles = _profiles_from_source(profile_source)
         device_info = {
             "index": index,
             "camera_model": model_name,
@@ -809,24 +949,30 @@ def list_camera_capabilities(serial_number=None):
             "camera_state": str(
                 getattr(device, "camera_state", "未知")
             ),
-            "connection": connection,
+            "host_transport": "本机物理设备",
+            "camera_interface": camera_interface,
+            # Retain the old key for callers, but no longer conflate the
+            # camera interface with how this process receives the frames.
+            "connection": camera_interface,
             "device_id": getattr(device, "id", None),
             "path": getattr(device, "path", None),
             "profiles": profiles,
+            "profiles_are_documented": True,
         }
         result["devices"].append(device_info)
 
         print(f"\n\033[92m设备 {index}: {model_name}\033[0m")
         print(f"  序列号: {device_serial}")
         print(f"  状态: {device_info['camera_state']}")
-        print(f"  连接方式: {connection}")
+        print(f"  主机输入: {device_info['host_transport']}")
+        print(f"  相机接口: {camera_interface}")
         if device_info["device_id"] is not None:
             print(f"  设备ID: {device_info['device_id']}")
         if device_info["path"]:
             print(f"  设备路径: {device_info['path']}")
 
         if profiles:
-            print("  支持的视频模式（单目输出尺寸）:")
+            print("  型号支持模式（官方规格，非设备动态查询）:")
             for profile in profiles:
                 size = f"{profile['width']}x{profile['height']}"
                 print(
@@ -834,25 +980,154 @@ def list_camera_capabilities(serial_number=None):
                     f"{size:<10} 支持帧率: {profile['fps']}"
                 )
         else:
-            print("  当前型号不是此封装支持的双目深度相机")
+            print("  未列举双目模式（型号未知或属于单目 ZED X One）")
 
-    if matched_devices == 0:
+    if not result["devices"]:
         if requested_serial is None:
-            print("\033[91m未检测到任何设备\033[0m")
+            print("  \033[93m未检测到本机物理设备\033[0m")
         else:
-            print(
-                "\033[91m未找到序列号为 "
-                f"{requested_serial} 的设备\033[0m"
+            print(f"  未找到本机序列号 {requested_serial}")
+
+    stream_error = None
+    if include_streams:
+        print("\n局域网内发现的 ZED SDK 网络流:")
+        streams, stream_error = _get_streaming_devices()
+        for index, stream in enumerate(streams):
+            stream_serial = str(
+                _stream_value(stream, "serial_number", default="未知")
             )
+            if (
+                requested_serial is not None
+                and stream_serial != requested_serial
+            ):
+                continue
+
+            stream_model = _stream_value(
+                stream, "camera_model", default="SDK 未提供"
+            )
+            model_name, camera_interface, _ = _model_details(stream_model)
+            stream_info = {
+                "index": index,
+                "camera_model": model_name,
+                "serial_number": stream_serial,
+                "ip": str(
+                    _stream_value(
+                        stream, "ip", "ip_address", default="未知"
+                    )
+                ),
+                "port": _stream_value(stream, "port", default=None),
+                "codec": str(
+                    _stream_value(stream, "codec", default="未知")
+                ),
+                "current_bitrate": _stream_value(
+                    stream, "current_bitrate", "bitrate", default=None
+                ),
+                "host_transport": "ZED SDK 网络流",
+                "camera_interface": camera_interface,
+                "profiles": [],
+                "profiles_are_documented": False,
+            }
+            result["streams"].append(stream_info)
+
+            endpoint = stream_info["ip"]
+            if stream_info["port"] is not None:
+                endpoint += f":{stream_info['port']}"
+            print(f"\n\033[92m网络流 {index}: {endpoint}\033[0m")
+            print(f"  相机型号: {model_name}")
+            print(f"  序列号: {stream_serial}")
+            print(f"  编码: {stream_info['codec']}")
+            if stream_info["current_bitrate"] is not None:
+                print(f"  当前码率: {stream_info['current_bitrate']} kbps")
+            print(
+                "  实际分辨率/FPS: 需连接流后读取，"
+                "不能由发现结果推断"
+            )
+
+        if not result["streams"]:
+            if stream_error:
+                print(f"  \033[93m网络流发现不可用: {stream_error}\033[0m")
+            elif requested_serial is None:
+                print(
+                    "  \033[93m未发现网络流（发送端可能尚未启动）"
+                    "\033[0m"
+                )
+            else:
+                print(f"  未发现序列号 {requested_serial} 的网络流")
+
+    architecture = host_architecture.lower()
+    if architecture in {"x86_64", "amd64", "i386", "i686"}:
+        print(
+            "\n\033[96m拓扑提示: ZED X + ZED Link 采集卡应由 Jetson "
+            "采集；此 x86 主机请使用 Jetson 发布的 ZED SDK 网络流。"
+            "\033[0m"
+        )
 
     return result
 
 
+def _command_line_arguments():
+    parser = argparse.ArgumentParser(
+        description="列举或打开本机 ZED 相机/Jetson ZED SDK 网络流"
+    )
+    parser.add_argument(
+        "--stream-ip",
+        help="ZED SDK 流发送端（通常为 Jetson）的 IP 或主机名",
+    )
+    parser.add_argument(
+        "--stream-port",
+        type=int,
+        default=30000,
+        help="ZED SDK 流端口（必须为偶数，默认 30000）",
+    )
+    parser.add_argument("--serial-number", help="本机物理相机序列号")
+    parser.add_argument(
+        "--resolution",
+        default="SVGA",
+        choices=[name for name, _, _ in ZEDCamera._RESOLUTION_SIZES],
+        help="本机采集模式；网络流模式由 Jetson 发送端决定",
+    )
+    parser.add_argument("--fps", type=int, default=120)
+    parser.add_argument(
+        "--list-only", action="store_true", help="仅列举设备，不打开相机"
+    )
+    parser.add_argument(
+        "--no-stream-discovery",
+        action="store_true",
+        help="不扫描局域网 ZED SDK 网络流",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    list_camera_capabilities()
-    camera = ZEDCamera(resolution=sl.RESOLUTION.SVGA, fps=120)
+    arguments = _command_line_arguments()
+    inventory = list_camera_capabilities(
+        serial_number=arguments.serial_number,
+        include_streams=not arguments.no_stream_discovery,
+    )
+    if arguments.list_only:
+        raise SystemExit(0)
+
+    if arguments.stream_ip is None and not inventory["devices"]:
+        print(
+            "\033[91m本机没有可打开的物理 ZED。若 ZED X 接在 Jetson "
+            "采集卡上，请使用 --stream-ip <Jetson_IP> "
+            "[--stream-port 30000]。\033[0m"
+        )
+        raise SystemExit(2)
+
+    resolution = getattr(sl.RESOLUTION, arguments.resolution, None)
+    if resolution is None:
+        print(f"当前 ZED SDK 不支持 {arguments.resolution} 分辨率枚举")
+        raise SystemExit(2)
+    camera = ZEDCamera(
+        resolution=resolution,
+        fps=arguments.fps,
+        serial_number=arguments.serial_number,
+        stream_ip=arguments.stream_ip,
+        stream_port=arguments.stream_port,
+    )
     if not camera.start():
-        print("等待相机启动或启动失败退出程序。")
+        print("相机或网络流启动失败，程序退出。")
         raise SystemExit(1)
 
     try:
