@@ -1,6 +1,6 @@
 from ultralytics import YOLO
 
-model_path = "~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/detection/model/ball/yolo26l-seg/best.pt"
+model_path = "./pic_zed_ball_seg/yolo26n_seg_768_b16/weights/best.pt"
 model = YOLO(model_path)
 
 # 导出为 TensorRT engine 格式
@@ -11,7 +11,9 @@ model = YOLO(model_path)
 # model.export(format="engine", half=True, device=0)
 model.export(
     format="engine",
-    imgsz=768,
+    imgsz=640,
+    batch=1,
+    dynamic=False,
     quantize=16,
     device=0,
 )

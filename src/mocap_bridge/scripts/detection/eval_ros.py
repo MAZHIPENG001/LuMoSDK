@@ -217,7 +217,7 @@ class BallPublisher(Node):
         )
         self.center_pub = self.create_publisher(PointStamped, '/ball_center', 10)
         # 加载模型
-        model_path = "./model/ball/yolo26l-seg/best.engine"
+        model_path = "./pic_zed_ball_seg/yolo26n_seg_768_b16/weights/best.pt"
         self.get_logger().info(f"加载模型: {model_path}")
         self.model = YOLO(model_path,task='segment')
 
@@ -269,7 +269,7 @@ class BallPublisher(Node):
             )
         # YOLO 推理
         inference_start = time.perf_counter()
-        results = self.model.predict(source=color_image, conf=0.5, verbose=False, retina_masks=True)
+        results = self.model.predict(source=color_image, imgsz=640, conf=0.5, classes=[0], max_det=1, verbose=False, retina_masks=True)
         self.inference_elapsed += time.perf_counter() - inference_start
         self.inference_frame_count += 1
 

@@ -118,7 +118,8 @@ class ZEDCamera:
         self.init_params.camera_resolution = resolution
         self.init_params.camera_fps = self.fps
         # self.init_params.depth_mode = sl.DEPTH_MODE.ULTRA
-        self.init_params.depth_mode = sl.DEPTH_MODE.NEURAL
+        # self.init_params.depth_mode = sl.DEPTH_MODE.NEURAL
+        self.init_params.depth_mode = sl.DEPTH_MODE.NEURAL_LIGHT
         self.init_params.coordinate_units = sl.UNIT.METER
         # IMAGE uses the optical convention shared by RealSense:
         # +X right, +Y down, +Z forward.

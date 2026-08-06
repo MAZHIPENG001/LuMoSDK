@@ -14,7 +14,7 @@ modelscope upload \
 ## 下载
 ```bash
 modelscope download \
-  pic_zed_ball/yolo26n_seg_768_b16/weights/best.pt \
+  pic_zed_ball_seg/yolo26n_seg_768_b16/weights/best.pt \
   --model MaZp001/yolo_detection \
   --local_dir . \
   --repo-type model
