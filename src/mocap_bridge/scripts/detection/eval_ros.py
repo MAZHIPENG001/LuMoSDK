@@ -269,7 +269,14 @@ class BallPublisher(Node):
             )
         # YOLO 推理
         inference_start = time.perf_counter()
-        results = self.model.predict(source=color_image, imgsz=640, conf=0.5, classes=[0], max_det=1, verbose=False, retina_masks=True)
+        results = self.model.predict(source=color_image, 
+                                    #  imgsz=640, 
+                                     imgsz=(480, 768),
+                                     conf=0.5, 
+                                     classes=[0], 
+                                     max_det=1, 
+                                     verbose=False, 
+                                     retina_masks=True)
         self.inference_elapsed += time.perf_counter() - inference_start
         self.inference_frame_count += 1
 

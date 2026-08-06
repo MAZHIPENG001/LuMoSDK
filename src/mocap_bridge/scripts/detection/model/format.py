@@ -11,7 +11,8 @@ model = YOLO(model_path)
 # model.export(format="engine", half=True, device=0)
 model.export(
     format="engine",
-    imgsz=640,
+    # imgsz=640,
+    imgsz=(480, 768),
     batch=1,
     dynamic=False,
     quantize=16,
