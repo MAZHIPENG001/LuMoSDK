@@ -906,7 +906,60 @@ if __name__ == "__main__":
         print("ZED X 启动失败，程序退出。")
         raise SystemExit(1)
 
+    fps_sample_frame = None
+    fps_sample_time_ns = None
+    actual_fps = 0.0
+    fps_update_interval_ns = 500_000_000
+
     try:
-        camera.display_images()
+        while True:
+            color_image, depth_image, metadata = camera.get_images(
+                return_metadata=True
+            )
+            if color_image is None or depth_image is None:
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+                continue
+
+            frame_number = metadata["frame_number"]
+            capture_time_ns = metadata["capture_time_ns"]
+            if fps_sample_frame is None:
+                fps_sample_frame = frame_number
+                fps_sample_time_ns = capture_time_ns
+            else:
+                elapsed_ns = capture_time_ns - fps_sample_time_ns
+                if elapsed_ns >= fps_update_interval_ns:
+                    actual_fps = (
+                        (frame_number - fps_sample_frame)
+                        * 1_000_000_000.0
+                        / elapsed_ns
+                    )
+                    fps_sample_frame = frame_number
+                    fps_sample_time_ns = capture_time_ns
+
+            cv2.putText(
+                color_image,
+                f"Actual FPS: {actual_fps:.1f}",
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                (0, 255, 0),
+                2,
+                cv2.LINE_AA,
+            )
+
+            valid_depth = np.nan_to_num(
+                depth_image, nan=0.0, posinf=0.0, neginf=0.0
+            )
+            depth_display = np.clip(
+                valid_depth / 3.0 * 255.0, 0, 255
+            ).astype(np.uint8)
+            cv2.imshow("ZED - Color", color_image)
+            cv2.imshow("ZED - Depth", depth_display)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    except KeyboardInterrupt:
+        pass
     finally:
+        cv2.destroyAllWindows()
         camera.stop()
