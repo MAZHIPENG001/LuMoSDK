@@ -123,7 +123,7 @@ cd src/mocap_bridge/scripts/detection/calib
 python3 charuco_mocap_handeye_calib.py \
   --ros-args \
   -p camera_type:=realsense \
-  -p rigid_id:=4 \
+  -p rigid_id:=5 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world
 ```
@@ -134,17 +134,50 @@ python3 charuco_mocap_handeye_calib.py \
 python3 charuco_mocap_handeye_calib.py \
   --ros-args \
   -p camera_type:=zed \
-  -p rigid_id:=4 \
+  -p rigid_id:=5 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world
 ```
+
+无需按键的自动采样模式（以下以 ZED 为例）：
+
+```bash
+python3 charuco_mocap_handeye_calib.py \
+  --ros-args \
+  -p camera_type:=zed \
+  -p rigid_id:=5 \
+  -p mocap_position_scale:=0.001 \
+  -p mocap_pose_direction:=rigid_to_world \
+  -p auto_capture:=true \
+  -p auto_target_samples:=20
+```
+
+```bash
+python3 charuco_mocap_handeye_calib.py \
+  --ros-args \
+  -p camera_type:=zed \
+  -p rigid_id:=4 \
+  -p mocap_position_scale:=0.001 \
+  -p mocap_pose_direction:=rigid_to_world \
+  -p auto_capture:=true \
+  -p auto_target_samples:=20 \
+  -p averaging_window_sec:=0.8 \
+  -p min_window_pairs:=30 \
+  -p min_charuco_corners:=18 \
+  -p max_reprojection_error_px:=0.5 \
+  -p max_pair_delta_sec:=0.015
+```
+
+自动模式会持续检查最近的同步窗口。每次将相机/刚体移动到一个新方向并短暂停稳后，只要该姿态满足静止
+阈值、且与所有已保存姿态有足够差异，就会自动保存。达到目标数量且具备至少两个不平行旋转轴后，程序会
+自动执行原有标定计算、写入相同格式的 `handeye_calibration.json` 并退出；不需要按 `s` 或 `c`。
 
 对时间同步和图像质量要求较高时，可使用更严格的采样参数：
 
 ```bash
 python3 charuco_mocap_handeye_calib.py --ros-args \
   -p camera_type:=zed \
-  -p rigid_id:=4 \
+  -p rigid_id:=5 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world \
   -p averaging_window_sec:=0.8 \
@@ -160,6 +193,7 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
 彩色画面左上角会显示：
 
 - `saved`：已经保存的标定位姿数量。
+- `AUTO saved=N/M`：自动模式已保存数量和自动计算的目标数量。
 - `PnP`：当前 ChArUco PnP 重投影 RMSE，单位为像素，越小越好。
 - `dt`：当前相机帧与最近动捕帧的时间差，单位为毫秒，越小越好。
 
@@ -167,15 +201,26 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
 
 | 按键 | 功能 |
 | --- | --- |
-| `s` | 保存当前静止位姿；实际保存的是最近一段时间内多帧位姿的平均值 |
+| `s` | 手动模式请求保存当前位姿；自动模式忽略此按键 |
 | `u` | 删除最后一个已保存位姿 |
 | `c` | 计算标定结果并写入 JSON；成功后程序自动退出 |
 | `q` | 不计算，直接退出 |
 
-推荐按以下方式采样：
+自动模式推荐按以下方式采样：
+
+1. 启动后保持第一个姿态不动，看到 `saved pose 1` 后再移动。
+2. 面向标定板改变相机的位置和方向；每到一个新姿态短暂停稳，看到计数增加后再继续。
+3. 姿态应覆盖俯仰、偏航和适量滚转，并改变观察距离及标定板在画面中的位置。
+4. 达到 `auto_target_samples` 后，若旋转覆盖充分，程序会自动计算、保存并退出；否则按终端提示继续补充
+   不同旋转轴的姿态。
+
+持续快速晃动不会被保存，因为这会降低相机/动捕时间配对和手眼标定精度。自动模式省去的是按键操作，
+每个采样姿态仍应短暂停稳。
+
+手动模式推荐按以下方式采样：
 
 1. 将相机移动到一个能清晰看到标定板的位置。
-2. 停稳相机和刚体，至少等待一个 `averaging_window_sec`。
+2. 停稳相机和刚体并保持不动。可以停稳后立即按 `s`；程序默认会等待最多 3 秒，以取得一个完整的静止窗口。
 3. 确认 ChArUco 角点正常显示，`PnP` 和 `dt` 没有超过设定阈值。
 4. 按一次 `s`，终端出现 `saved pose N` 后再移动到下一个位姿。
 5. 采集 15～25 个差异明显的位姿。程序默认至少需要 12 个。
@@ -183,7 +228,7 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
 
 采样不能只做平移。相机应绕至少两个不平行的轴产生充分旋转，同时改变观察距离和画面位置。建议覆盖
 俯仰、偏航和适量滚转，但始终保证标定板清晰可见。相邻样本若平移小于 `10 mm` 且旋转小于 `5°`，
-默认会被视为重复位姿而拒绝保存。
+默认会被视为重复位姿而拒绝保存。自动模式会与所有历史样本比较，避免绕回旧姿态时重复采样。
 
 ## ROS 2 参数
 
@@ -227,16 +272,20 @@ python3 charuco_mocap_handeye_calib.py --ros-args \
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `averaging_window_sec` | `0.40` | 按 `s` 时参与平均的最近时间窗口，单位为秒 |
+| `averaging_window_sec` | `0.40` | 自动检测或按 `s` 时参与平均的最近时间窗口，单位为秒 |
 | `min_window_pairs` | `8` | 一个静止位姿至少需要的有效相机/动捕配对帧数 |
 | `stationary_mocap_translation_m` | `0.002` | 窗口内动捕平移最大离散阈值 |
 | `stationary_mocap_rotation_deg` | `0.5` | 窗口内动捕旋转最大离散阈值 |
 | `stationary_pnp_translation_m` | `0.003` | 窗口内 PnP 平移最大离散阈值 |
 | `stationary_pnp_rotation_deg` | `0.8` | 窗口内 PnP 旋转最大离散阈值 |
-| `duplicate_translation_m` | `0.010` | 与上一样本比较时的重复平移阈值 |
-| `duplicate_rotation_deg` | `5.0` | 与上一样本比较时的重复旋转阈值 |
+| `stationary_wait_timeout_sec` | `3.0` | 按 `s` 后等待连续静止窗口的最长时间；设为 `0` 恢复立即判定 |
+| `duplicate_translation_m` | `0.010` | 与历史样本比较时的重复平移阈值 |
+| `duplicate_rotation_deg` | `5.0` | 与历史样本比较时的重复旋转阈值 |
 | `min_samples` | `12` | 计算标定所需的最少已保存位姿数，程序内部下限为 3 |
 | `max_outlier_fraction` | `0.25` | 鲁棒重算时最多允许剔除的样本比例 |
+| `auto_capture` | `false` | 是否自动检测、保存新静止姿态并在覆盖充分后计算结果 |
+| `auto_target_samples` | `20` | 自动计算的目标样本数；程序内部不会低于 `min_samples` |
+| `auto_check_interval_sec` | `0.10` | 自动静止窗口检查间隔，单位为秒，程序内部下限为 `0.02` |
 
 ## 输出文件说明
 
@@ -313,8 +362,15 @@ python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
 
 ### 按 `s` 后提示位姿不静止
 
-保持设备静止更长时间，避免手持抖动、标定板晃动和画面模糊。根据真实传感器噪声，可适度放宽对应的
-`stationary_*` 阈值，但不应通过大幅放宽阈值掩盖运动或同步问题。
+按 `s` 后程序会先输出 `save requested`，并在 `stationary_wait_timeout_sec` 内用最新数据反复寻找连续静止
+窗口；此时保持设备不动，出现 `saved pose N` 才表示保存成功。超时后只输出一次最终离散量，避免反复按键
+产生大量相同警告。
+
+- 如果 mocap 与 PnP 的平移、旋转离散量同时以相近幅度变大，通常是相机/刚体仍在运动，或固定板发生晃动。
+- 如果只有 mocap 偏大，检查刚体是否刚性安装、反光点跟踪是否跳变以及 `mocap_position_scale`。
+- 如果只有 PnP 偏大，改善照明和对焦、增大标定板在画面中的尺寸，并检查打印尺寸和相机内参。
+- 如需更多停稳时间，可设置 `-p stationary_wait_timeout_sec:=5.0`。只有在设备确实静止、并测得稳定噪声基线后，
+  才应小幅放宽对应的 `stationary_*` 阈值；不应以大幅放宽阈值掩盖运动或同步问题。
 
 ### 提示位姿与上一样本过于相似
 

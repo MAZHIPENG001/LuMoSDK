@@ -21,8 +21,6 @@ python3 charuco_mocap_handeye_calib.py \
   -p rigid_id:=4 \
   -p mocap_position_scale:=0.001 \
   -p mocap_pose_direction:=rigid_to_world \
-  -p auto_capture:=true \
-  -p auto_target_samples:=20 \
   -p averaging_window_sec:=0.8 \
   -p min_window_pairs:=30 \
   -p min_charuco_corners:=18 \
@@ -156,9 +154,6 @@ class CharucoMocapHandEye(Node):
 
         self.declare_parameter('min_samples', 12)
         self.declare_parameter('max_outlier_fraction', 0.25)
-        self.declare_parameter('auto_capture', False)
-        self.declare_parameter('auto_target_samples', 20)
-        self.declare_parameter('auto_check_interval_sec', 0.10)
 
         self.squares_x = int(self.get_parameter('squares_x').value)
         self.squares_y = int(self.get_parameter('squares_y').value)
@@ -254,17 +249,6 @@ class CharucoMocapHandEye(Node):
         self.max_outlier_fraction = float(
             self.get_parameter('max_outlier_fraction').value
         )
-        self.auto_capture = bool(
-            self.get_parameter('auto_capture').value
-        )
-        self.auto_target_samples = max(
-            self.min_samples,
-            int(self.get_parameter('auto_target_samples').value),
-        )
-        self.auto_check_interval_sec = max(
-            0.02,
-            float(self.get_parameter('auto_check_interval_sec').value),
-        )
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.output_dir = SCRIPT_DIR / f'{self.camera_type}_{timestamp}'
         self.output_path = self.output_dir / 'handeye_calibration.json'
@@ -286,8 +270,6 @@ class CharucoMocapHandEye(Node):
         self.latest_rmse_px = None
         self.capture_pending = False
         self.capture_deadline_monotonic = None
-        self.next_auto_capture_check_monotonic = time.monotonic()
-        self.auto_calculation_started = False
 
         self.realsense_sdk = None
         self.camera = self.create_camera()
@@ -320,21 +302,12 @@ class CharucoMocapHandEye(Node):
         self.get_logger().info(
             f'calibration output: {self.output_path}'
         )
-        if self.auto_capture:
-            self.get_logger().info(
-                'AUTO capture enabled: keep the board fixed; move the '
-                'camera/rigid body to different poses and briefly hold still. '
-                f'Calibration starts automatically after at least '
-                f'{self.auto_target_samples} distinct poses with rotations '
-                'about at least two axes. Press q to abort.'
-            )
-        else:
-            self.get_logger().info(
-                "Keep the board fixed. Stop at each pose, press 's' once, "
-                "then hold still until it is saved. Use 15-25 poses with "
-                "rotations about at least two axes. Keys: s=save, u=undo, "
-                "c=calculate, q=quit."
-            )
+        self.get_logger().info(
+            "Keep the board fixed. Stop at each pose, press 's' once, then "
+            "hold still until it is saved. "
+            "Use 15-25 poses with rotations about at least two axes. "
+            "Keys: s=save, u=undo, c=calculate, q=quit."
+        )
 
         self.key_thread = threading.Thread(
             target=self.keyboard_loop, daemon=True
@@ -590,15 +563,10 @@ class CharucoMocapHandEye(Node):
                 )
 
         self.process_pending_capture()
-        self.process_auto_capture()
 
         if self.show_image:
             count = len(self.samples)
-            status = (
-                f'AUTO saved={count}/{self.auto_target_samples}'
-                if self.auto_capture
-                else f'saved={count}'
-            )
+            status = f'saved={count}'
             if self.latest_rmse_px is not None:
                 status += f'  PnP={self.latest_rmse_px:.2f}px'
             if self.latest_pair_delta_ms is not None:
@@ -665,19 +633,9 @@ class CharucoMocapHandEye(Node):
 
     def keyboard_loop(self):
         if not sys.stdin.isatty():
-            log = (
-                self.get_logger().info
-                if self.auto_capture
-                else self.get_logger().error
-            )
-            log(
-                'stdin is not a terminal; automatic capture continues. Use '
-                'Ctrl+C to abort.'
-                if self.auto_capture
-                else (
-                    'stdin is not a terminal; run this script in an '
-                    'interactive terminal to use s/u/c/q.'
-                )
+            self.get_logger().error(
+                'stdin is not a terminal; run this script in an interactive '
+                'terminal to use s/u/c/q.'
             )
             return
         try:
@@ -693,8 +651,7 @@ class CharucoMocapHandEye(Node):
                     continue
                 key = sys.stdin.read(1).lower()
                 if key == 's':
-                    if not self.auto_capture:
-                        self.request_stationary_pose()
+                    self.request_stationary_pose()
                 elif key == 'u':
                     self.undo_last_pose()
                 elif key == 'c':
@@ -765,61 +722,6 @@ class CharucoMocapHandEye(Node):
                 )
         finally:
             self.capture_lock.release()
-
-    def process_auto_capture(self):
-        """Save distinct stationary poses and calculate when coverage is met."""
-        if (
-            not self.auto_capture
-            or self.capture_pending
-            or self.auto_calculation_started
-        ):
-            return
-
-        now = time.monotonic()
-        if now < self.next_auto_capture_check_monotonic:
-            return
-        self.next_auto_capture_check_monotonic = (
-            now + self.auto_check_interval_sec
-        )
-
-        if not self.capture_lock.acquire(blocking=False):
-            return
-        try:
-            saved, _, _ = self.try_save_stationary_pose()
-        finally:
-            self.capture_lock.release()
-        if not saved:
-            return
-
-        with self.data_lock:
-            count = len(self.samples)
-            rotations = [
-                sample['R_mocap_raw'].copy() for sample in self.samples
-            ]
-        if count < self.auto_target_samples:
-            return
-        if not self.has_rotation_excitation(rotations):
-            self.get_logger().info(
-                f'auto capture has {count} distinct poses, but rotation '
-                'coverage is still insufficient; continue with pitch/yaw/'
-                'roll poses'
-            )
-            return
-
-        self.auto_calculation_started = True
-        self.get_logger().info(
-            f'auto capture complete with {count} poses; calculating '
-            'calibration'
-        )
-        if self.calculate_calibration():
-            rclpy.shutdown()
-            return
-
-        self.auto_calculation_started = False
-        self.get_logger().warn(
-            'automatic calibration failed; capture will continue with new '
-            'poses'
-        )
 
     def save_stationary_pose(self):
         """Try one immediate save, retained for direct/programmatic use."""
@@ -900,11 +802,12 @@ class CharucoMocapHandEye(Node):
             )
 
         with self.data_lock:
-            for saved_index, saved_sample in enumerate(self.samples, start=1):
+            if self.samples:
+                last = self.samples[-1]
                 translation_delta = float(
-                    np.linalg.norm(t_mocap - saved_sample['t_mocap_raw'])
+                    np.linalg.norm(t_mocap - last['t_mocap_raw'])
                 )
-                relative = saved_sample['R_mocap_raw'].T @ r_mocap
+                relative = last['R_mocap_raw'].T @ r_mocap
                 rotation_delta = float(
                     np.degrees(Rotation.from_matrix(relative).magnitude())
                 )
@@ -915,8 +818,8 @@ class CharucoMocapHandEye(Node):
                     return (
                         False,
                         False,
-                        f'pose is too similar to saved pose {saved_index}; '
-                        'move or rotate the camera before saving again',
+                        'pose is too similar to the previous sample; move and '
+                        'rotate the camera before saving again',
                     )
 
             sample = {
