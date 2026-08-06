@@ -12,12 +12,12 @@ connected, while the ChArUco board remains fixed in the mocap world::
 
 Examples:
 
-    python3 handeye.py --camera d435 --rigid-id 4
-    python3 handeye.py --camera zed --rigid-id 4 --auto-capture
+    python3 handeye.py --camera d435 --rigid-id 5
+    python3 handeye.py --camera zed --rigid-id 5 --auto-capture
 
 The equivalent ROS 2 parameter form is also supported::
 
-    python3 handeye.py --ros-args -p camera_type:=zed -p rigid_id:=4 \
+    python3 handeye.py --ros-args -p camera_type:=zed -p rigid_id:=5 \
         -p auto_capture:=true
 
 Keys: ``s`` save a stationary pose, ``u`` undo, ``c`` calculate, ``q`` quit.
@@ -97,6 +97,7 @@ class RuntimeConfig:
     mocap_pose_direction: str
     use_mocap_header_stamp: bool
     max_pair_delta_sec: float
+    max_observation_age_sec: float
     squares_x: int
     squares_y: int
     square_length_m: float
@@ -576,6 +577,7 @@ class HandEyeCalibrationNode(Node):
         self.samples: list[PoseSample] = []
         self.latest_pair_delta_ms: Optional[float] = None
         self.latest_rmse_px: Optional[float] = None
+        self.latest_corner_count: Optional[int] = None
         self.capture_pending = False
         self.capture_deadline: Optional[float] = None
         self.next_auto_check = time.monotonic()
@@ -641,6 +643,8 @@ class HandEyeCalibrationNode(Node):
             "mocap_pose_direction": cli.mocap_pose_direction,
             "use_mocap_header_stamp": True,
             "max_pair_delta_sec": 0.03,
+            # Never save a window after camera/board detection has gone stale.
+            "max_observation_age_sec": 0.25,
             "squares_x": SQUARES_X,
             "squares_y": SQUARES_Y,
             "square_length_m": SQUARE_LENGTH_M,
@@ -697,6 +701,9 @@ class HandEyeCalibrationNode(Node):
             .lower(),
             use_mocap_header_stamp=bool(parameter("use_mocap_header_stamp")),
             max_pair_delta_sec=float(parameter("max_pair_delta_sec")),
+            max_observation_age_sec=float(
+                parameter("max_observation_age_sec")
+            ),
             squares_x=int(parameter("squares_x")),
             squares_y=int(parameter("squares_y")),
             square_length_m=float(parameter("square_length_m")),
@@ -759,6 +766,8 @@ class HandEyeCalibrationNode(Node):
             )
         if config.max_pair_delta_sec <= 0.0:
             raise ValueError("max_pair_delta_sec must be positive")
+        if config.max_observation_age_sec <= 0.0:
+            raise ValueError("max_observation_age_sec must be positive")
         if config.averaging_window_sec <= 0.0:
             raise ValueError("averaging_window_sec must be positive")
         nonnegative_thresholds = {
@@ -914,6 +923,7 @@ class HandEyeCalibrationNode(Node):
             )
             self._add_synchronized_pair(camera_time, pose)
             self.latest_rmse_px = pose.reprojection_rmse_px
+            self.latest_corner_count = pose.corner_count
             if not self.estimator.inverse_brown:
                 cv2.drawFrameAxes(
                     color,
@@ -939,6 +949,8 @@ class HandEyeCalibrationNode(Node):
         )
         if self.latest_rmse_px is not None:
             status += f"  PnP={self.latest_rmse_px:.2f}px"
+        if self.latest_corner_count is not None:
+            status += f"  corners={self.latest_corner_count}"
         if self.latest_pair_delta_ms is not None:
             status += f"  dt={self.latest_pair_delta_ms:.1f}ms"
         if self.capture_pending:
@@ -986,6 +998,7 @@ class HandEyeCalibrationNode(Node):
             self.paired_buffer.append(
                 {
                     "camera_time": camera_time,
+                    "paired_monotonic": time.monotonic(),
                     "mocap_time": mocap_time,
                     "pair_delta_sec": delta,
                     "rotation_gripper_raw": rotation.copy(),
@@ -1115,6 +1128,18 @@ class HandEyeCalibrationNode(Node):
         with self.data_lock:
             if not self.paired_buffer:
                 return False, True, "没有同步的 ChArUco/动捕数据"
+            observation_age = (
+                time.monotonic()
+                - self.paired_buffer[-1]["paired_monotonic"]
+            )
+            if observation_age > self.config.max_observation_age_sec:
+                return (
+                    False,
+                    True,
+                    "最新同步观测已过期 "
+                    f"({observation_age * 1000.0:.0f} ms)，"
+                    "请确认标定板仍被清晰检测且动捕正常",
+                )
             newest_time = self.paired_buffer[-1]["camera_time"]
             window = [
                 dict(item)
@@ -1396,7 +1421,11 @@ class HandEyeCalibrationNode(Node):
             "camera": {
                 "type": self.config.camera_type,
                 "description": self.camera_description,
-                "serial": self.config.camera_serial,
+                "requested_serial": self.config.camera_serial,
+                "serial": self._actual_camera_serial(),
+                "image_width": int(getattr(self.camera, "width", 0)),
+                "image_height": int(getattr(self.camera, "height", 0)),
+                "fps": float(self.camera_fps),
                 "optical_frame_convention": "x right, y down, z forward",
                 "matrix": self.camera_matrix.tolist(),
                 "distortion_model": self.distortion_model,
@@ -1422,6 +1451,18 @@ class HandEyeCalibrationNode(Node):
             json.dump(payload, output_file, ensure_ascii=False, indent=2)
             output_file.write("\n")
         return output_path
+
+    def _actual_camera_serial(self) -> Optional[str]:
+        """Return the connected device serial without depending on one SDK."""
+        serial = getattr(self.camera, "serial_number", None)
+        if self.config.camera_type == "d435" and self.realsense_sdk is not None:
+            try:
+                serial = self.camera.profile.get_device().get_info(
+                    self.realsense_sdk.camera_info.serial_number
+                )
+            except Exception:
+                pass
+        return None if serial is None else str(serial)
 
     @staticmethod
     def _print_result(
@@ -1473,7 +1514,12 @@ def parse_arguments(args: Optional[Sequence[str]] = None) -> tuple[
         help="相机类型：d435/realsense 或 zed（默认 d435）",
     )
     parser.add_argument("--camera-serial", default=None, help="可选相机序列号")
-    parser.add_argument("--rigid-id", type=int, default=4, help="末端动捕刚体 ID")
+    parser.add_argument(
+        "--rigid-id",
+        type=int,
+        default=5,
+        help="与相机刚性连接的动捕刚体 ID（默认 5）",
+    )
     parser.add_argument(
         "--mocap-topic", default="/mocap_data", help="动捕消息话题"
     )

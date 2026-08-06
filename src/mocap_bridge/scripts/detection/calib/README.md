@@ -47,7 +47,7 @@ T_world_gripper * T_gripper_camera * T_camera_board = T_world_board
 - Python 依赖：`numpy`、`scipy` 和带 `aruco` 模块的 OpenCV。
 - OpenCV 需要提供 `cv2.aruco.CharucoDetector`；通常应安装与当前 Python 环境兼容的
   `opencv-contrib-python`。
-- 动捕系统能够在 `/mocap_data` 发布待标定刚体，默认使用刚体 `4`。
+- 动捕系统能够在 `/mocap_data` 发布待标定刚体，默认使用刚体 `5`。
 - 手动无界面模式必须在交互式终端中运行；显示预览窗口时也可以直接在窗口中使用 `s/u/c/q` 快捷键。
 
 可以先检查公共 Python 模块及当前使用的相机 SDK（以下以 ZED 为例）：
@@ -71,7 +71,7 @@ source install/setup.bash
 
 1. 将相机和动捕刚体牢固安装在一起。标定完成后不能再改变二者的相对位置。
 2. 将 ChArUco 板固定在动捕空间中，保证相机移动过程中标定板本身不动。
-3. 确认动捕刚体 ID、位姿方向和位置单位。本项目默认刚体 ID 为 `4`，位置单位为毫米，SDK 输出的
+3. 确认动捕刚体 ID、位姿方向和位置单位。本项目默认刚体 ID 为 `5`，位置单位为毫米，SDK 输出的
    位姿按 `rigid_to_world` 使用。
 4. 确认相机能按脚本的固定配置同时开启彩色流与深度流：D435 使用
    `640×480@60 Hz`，ZED 使用原生 `SVGA@120 Hz`。
@@ -268,12 +268,13 @@ python3 src/mocap_bridge/scripts/detection/calib/handeye.py --help
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `rigid_id` | `4` | 与相机刚性连接的动捕刚体 ID |
+| `rigid_id` | `5` | 与相机刚性连接的动捕刚体 ID |
 | `mocap_topic` | `/mocap_data` | `mocap_bridge.msg.MocapData` 输入话题 |
 | `mocap_position_scale` | `0.001` | 动捕平移转换到米的比例；输入为毫米时使用 `0.001` |
 | `mocap_pose_direction` | `rigid_to_world` | `rigid_to_world`、`world_to_rigid` 或 `auto`；本项目发布端默认使用前者 |
 | `use_mocap_header_stamp` | `true` | 优先使用 `/mocap_data` 的 ROS Header 时间戳 |
 | `max_pair_delta_sec` | `0.03` | 相机帧与动捕帧允许的最大时间差，单位为秒 |
+| `max_observation_age_sec` | `0.25` | 保存采样时允许最新同步观测的最大年龄，避免误存陈旧位姿 |
 
 本项目的动捕发布节点在本机收到 SDK 数据时写入 ROS Header，相机采集时间也使用本机系统时钟，因此默认
 可以直接配对。如果接入其他动捕发布节点，应确认两个时间戳来自同一时钟域。
