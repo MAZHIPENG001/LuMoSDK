@@ -240,6 +240,12 @@ class BallPublisher(Node):
             min_cutoff=2.0, beta=5.0, derivative_cutoff=1.0
         )
 
+        # 每秒统计一次成功获取图像的帧率和模型纯推理帧率。
+        self.fps_window_start = time.perf_counter()
+        self.capture_frame_count = 0
+        self.inference_frame_count = 0
+        self.inference_elapsed = 0.0
+
         # 创建定时器（ * Hz 处理）
         self.timer = self.create_timer(1/60, self.process_frame)
 
@@ -249,6 +255,7 @@ class BallPublisher(Node):
         )
         if color_image is None or depth_image is None:
             return
+        self.capture_frame_count += 1
 
         display_image = color_image.copy()
 
@@ -261,10 +268,35 @@ class BallPublisher(Node):
                 nanosec=int(capture_time_ns % 1_000_000_000),
             )
         # YOLO 推理
-        # t0=time.time()
+        inference_start = time.perf_counter()
         results = self.model.predict(source=color_image, conf=0.5, verbose=False, retina_masks=True)
-        # t1=time.time()
-        # print(t1-t0)
+        self.inference_elapsed += time.perf_counter() - inference_start
+        self.inference_frame_count += 1
+
+        now = time.perf_counter()
+        fps_window_elapsed = now - self.fps_window_start
+        if fps_window_elapsed >= 1.0:
+            capture_fps = self.capture_frame_count / fps_window_elapsed
+            inference_fps = (
+                self.inference_frame_count / self.inference_elapsed
+                if self.inference_elapsed > 0.0
+                else 0.0
+            )
+            average_inference_ms = (
+                self.inference_elapsed * 1000.0 / self.inference_frame_count
+                if self.inference_frame_count > 0
+                else 0.0
+            )
+            self.get_logger().info(
+                f"图像获取 FPS: {capture_fps:.2f}, "
+                f"模型推理 FPS: {inference_fps:.2f} "
+                f"({average_inference_ms:.2f} ms/帧)"
+            )
+            self.fps_window_start = now
+            self.capture_frame_count = 0
+            self.inference_frame_count = 0
+            self.inference_elapsed = 0.0
+
         if len(results[0].boxes) > 0:
             max_conf_idx = results[0].boxes.conf.argmax().item()
             best_result = results[0][max_conf_idx]
