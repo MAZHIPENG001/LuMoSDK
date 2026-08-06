@@ -217,7 +217,7 @@ class BallPublisher(Node):
         )
         self.center_pub = self.create_publisher(PointStamped, '/ball_center', 10)
         # 加载模型
-        model_path = "./pic_zed_ball_seg/yolo26n_seg_768_b16/weights/best.pt"
+        model_path = "./model/pic_zed_ball_seg/yolo26n_seg_768_b16/weights/best.pt"
         self.get_logger().info(f"加载模型: {model_path}")
         self.model = YOLO(model_path,task='segment')
 
