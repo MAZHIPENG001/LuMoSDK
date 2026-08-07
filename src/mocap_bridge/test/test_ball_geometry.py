@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import cv2
 import numpy as np
 
 
@@ -78,3 +79,43 @@ def test_truncated_silhouette_is_rejected():
         assert "truncated" in str(error)
     else:
         raise AssertionError("a truncated sphere silhouette must be rejected")
+
+
+def test_robust_ellipse_reduces_local_mask_edge_noise():
+    expected = np.array([0.35, -0.15, 2.5])
+    base_mask = render_sphere_mask(expected).astype(np.uint8)
+    random = np.random.default_rng(7)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    estimates = {"raw": [], "ellipse": []}
+
+    for _ in range(24):
+        mask = base_mask.copy()
+        edge = cv2.morphologyEx(mask, cv2.MORPH_GRADIENT, kernel)
+        rows, columns = np.where(edge)
+        for _ in range(8):
+            index = int(random.integers(len(columns)))
+            cv2.circle(
+                mask,
+                (int(columns[index]), int(rows[index])),
+                int(random.integers(1, 3)),
+                int(random.integers(0, 2)),
+                thickness=-1,
+            )
+        for boundary_model in estimates:
+            result = estimate_fixed_radius_sphere_from_mask(
+                mask,
+                INTRINSICS,
+                RADIUS_M,
+                boundary_model=boundary_model,
+            )
+            estimates[boundary_model].append(result.center)
+
+    errors = {
+        name: np.asarray(centers) - expected
+        for name, centers in estimates.items()
+    }
+    raw_rmse = np.sqrt(np.mean(np.sum(errors["raw"] ** 2, axis=1)))
+    ellipse_rmse = np.sqrt(
+        np.mean(np.sum(errors["ellipse"] ** 2, axis=1))
+    )
+    assert ellipse_rmse < raw_rmse

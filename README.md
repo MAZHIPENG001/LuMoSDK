@@ -116,8 +116,11 @@ python3 eval_ros.py --camera zed
 `pyzed.sl`。
 
 球心默认使用 `silhouette` 方法：根据 YOLO 分割轮廓、相机内参和球的已知物理半径，直接恢复三维球心，
-不使用光滑球面上可能存在系统偏差的双目深度。默认半径为 `0.110 m`，使用前必须实测目标球直径并设置正确
-半径；半径误差会近似按相同比例变成距离误差：
+不使用光滑球面上可能存在系统偏差的双目深度。轮廓默认先经过鲁棒亚像素椭圆拟合，以抑制小目标二值掩码
+边缘的锯齿和局部毛刺；该处理只使用当前帧，不会增加时间滤波延迟。可使用
+`--silhouette-boundary-model raw` 恢复直接使用原始边界的行为。
+
+默认半径为 `0.110 m`，使用前必须实测目标球直径并设置正确半径；半径误差会近似按相同比例变成距离误差：
 
 ```bash
 python3 eval_ros.py \
@@ -126,25 +129,33 @@ python3 eval_ros.py \
   --ball-radius-m 0.110
 ```
 
-如需对照原来的深度球面拟合，可使用 `--position-method depth`。轮廓法失败时也会自动回退到深度法，预览中
-会显示本帧实际使用的 `silhouette`、`depth-sphere` 或 `depth-ray`。`/ball_center` 默认启用 One Euro
-自适应滤波，在静止时抑制帧间噪声、运动时自动提高响应；`/ball_center_raw` 保留通过质量门控但未经平滑的
-球心，便于评估检测本身。需要对照未滤波发布行为时可加 `--disable-one-euro-filter`。
+如需对照深度球面拟合，可使用 `--position-method depth`。在 `silhouette` 模式下，深度回退默认采用
+`auto`：RealSense 启用，当前球面深度误差较大的 ZED 禁用，避免偶发轮廓失败产生较大的深度跳点。可通过
+`--depth-fallback enabled` 或 `--depth-fallback disabled` 强制修改。
 
-检测端默认开启运动一致性门控，阈值为最大表观速度 `8 m/s`、相对匀速预测最大偏差 `0.25 m`。运动门控
-不会修改正常测量；孤立极值不会发布到 `/ball_center_raw` 和 `/ball_surface`，`/ball_center` 最多使用 `0.25 s`
-匀速预测维持连续，之后停止发布而不会输出错误位置。预览和终端会分别显示 `motion-prediction` 和拒绝原因。
-如果目标实际速度超过默认值，应按真实速度调大阈值，例如：
+`/ball_center` 默认启用 One Euro 自适应滤波，新默认参数为 `min_cutoff=8 Hz`、`beta=1`。与原来的
+`2 Hz/5` 相比，它降低静止或低速阶段的滤波滞后，同时避免速度噪声使滤波器过早接近直通。参数可通过
+`--one-euro-min-cutoff`、`--one-euro-beta` 和 `--one-euro-derivative-cutoff` 调整；
+`/ball_center_raw` 始终保留未经时间滤波的球心。需要完全关闭滤波时使用 `--disable-one-euro-filter`。
+
+#### 检测低时延运行
+
+发布队列只保留最新一个坐标，处理定时器默认跟随相机帧率。检测预览默认只显示彩色图；如需深度伪彩色图，
+显式添加 `--show-depth-preview`。生产运行时可关闭全部 GUI，并在不需要 `/ball_surface` 诊断数据时跳过表面
+深度处理：
 
 ```bash
 python3 eval_ros.py \
   --camera zed \
-  --max-ball-speed-mps 12 \
-  --max-motion-innovation-m 0.35 \
-  --max-prediction-sec 0.25
+  --position-method silhouette \
+  --disable-preview \
+  --disable-surface-publish
 ```
 
-调试时可用 `--disable-motion-gate` 恢复不做在线极值门控的发布行为。
+`--model` 可以指定 `.engine` 或 `.pt` 模型；脚本优先使用模型目录下的 `best.engine`，不存在时回退到
+`best.pt`。`--imgsz HEIGHT WIDTH` 可调整推理尺寸，减小尺寸通常降低推理时间，但也会降低远距离小球的轮廓
+稳定性；TensorRT engine 的输入尺寸在导出时已经固定，修改 `--imgsz` 前应重新导出对应尺寸的 engine。
+程序每秒输出处理 FPS、纯模型耗时、整帧处理耗时，以及相机采集到发布的平均/最大时延。
 
 ### 订阅数据
 

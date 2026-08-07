@@ -84,6 +84,42 @@ def _tangent_residuals(center, unit_rays, radius):
     return perpendicular_distance - radius
 
 
+def _fit_robust_ellipse(boundary, max_iterations=3):
+    """Fit an ellipse after rejecting localized mask-edge protrusions."""
+    points = np.asarray(boundary, dtype=np.float32).reshape(-1, 2)
+    if len(points) < 5:
+        raise ValueError("at least five contour points are required")
+
+    ellipse = cv2.fitEllipse(points.reshape(-1, 1, 2))
+    for _ in range(max(0, int(max_iterations))):
+        (center_u, center_v), axes, angle_deg = ellipse
+        semi_axis_x = max(0.5 * float(axes[0]), 1e-6)
+        semi_axis_y = max(0.5 * float(axes[1]), 1e-6)
+        angle = np.radians(float(angle_deg))
+        centered = points - np.array([center_u, center_v])
+        local_x = (
+            np.cos(angle) * centered[:, 0]
+            + np.sin(angle) * centered[:, 1]
+        )
+        local_y = (
+            -np.sin(angle) * centered[:, 0]
+            + np.cos(angle) * centered[:, 1]
+        )
+        normalized_radius = np.sqrt(
+            (local_x / semi_axis_x) ** 2
+            + (local_y / semi_axis_y) ** 2
+        )
+        deviations = np.abs(normalized_radius - 1.0)
+        median = float(np.median(deviations))
+        mad = float(np.median(np.abs(deviations - median)))
+        inlier_limit = max(0.025, median + 2.5 * 1.4826 * mad)
+        inliers = deviations <= inlier_limit
+        if np.count_nonzero(inliers) < max(5, len(points) // 2):
+            break
+        ellipse = cv2.fitEllipse(points[inliers].reshape(-1, 1, 2))
+    return ellipse
+
+
 def estimate_fixed_radius_sphere_from_mask(
     mask,
     intrinsics,
@@ -94,13 +130,16 @@ def estimate_fixed_radius_sphere_from_mask(
     max_axis_ratio=1.55,
     min_circularity=0.45,
     contour_edge_offset_px=0.4,
+    boundary_model="ellipse",
 ):
     """Estimate a sphere center from its segmentation silhouette.
 
     Every silhouette boundary pixel defines a camera ray tangent to the
-    sphere.  The center-to-ray distance therefore equals ``radius``.  A robust
-    least-squares solve over the complete contour estimates all three center
-    coordinates without using stereo depth.
+    sphere.  The center-to-ray distance therefore equals ``radius``.  By
+    default a sub-pixel ellipse is fitted to the binary contour before the
+    tangent solve.  A projected sphere is exactly a conic, so this suppresses
+    mask stair-stepping without introducing temporal filtering or delay.
+    ``boundary_model="raw"`` retains the original direct-contour behavior.
     """
     mask = largest_component_mask(mask)
     radius = float(radius)
@@ -120,13 +159,17 @@ def estimate_fixed_radius_sphere_from_mask(
             f"ball silhouette is too small: {area:.1f} < {min_area_px} px"
         )
 
+    boundary_model = str(boundary_model).strip().lower()
+    if boundary_model not in {"ellipse", "raw"}:
+        raise ValueError("boundary_model must be 'ellipse' or 'raw'")
+
     height, width = mask.shape
-    boundary = contour.reshape(-1, 2).astype(np.float64)
+    raw_boundary = contour.reshape(-1, 2).astype(np.float64)
     if (
-        np.any(boundary[:, 0] <= 0)
-        or np.any(boundary[:, 0] >= width - 1)
-        or np.any(boundary[:, 1] <= 0)
-        or np.any(boundary[:, 1] >= height - 1)
+        np.any(raw_boundary[:, 0] <= 0)
+        or np.any(raw_boundary[:, 0] >= width - 1)
+        or np.any(raw_boundary[:, 1] <= 0)
+        or np.any(raw_boundary[:, 1] >= height - 1)
     ):
         raise ValueError("ball silhouette is truncated by the image boundary")
 
@@ -141,10 +184,10 @@ def estimate_fixed_radius_sphere_from_mask(
             f"ball silhouette circularity is too low: {circularity:.3f}"
         )
 
-    if len(boundary) >= 5:
-        _, ellipse_axes, _ = cv2.fitEllipse(
-            boundary.astype(np.float32).reshape(-1, 1, 2)
-        )
+    fitted_ellipse = None
+    if len(raw_boundary) >= 5:
+        fitted_ellipse = _fit_robust_ellipse(raw_boundary)
+        _, ellipse_axes, _ = fitted_ellipse
         minor_axis, major_axis = sorted(map(float, ellipse_axes))
         axis_ratio = major_axis / max(minor_axis, 1e-9)
     else:
@@ -154,18 +197,22 @@ def estimate_fixed_radius_sphere_from_mask(
             f"ball silhouette axis ratio is too large: {axis_ratio:.3f}"
         )
 
-    max_boundary_points = max(16, int(max_boundary_points))
-    if len(boundary) > max_boundary_points:
-        indices = np.linspace(
-            0, len(boundary) - 1, max_boundary_points, dtype=np.int64
-        )
-        boundary = boundary[indices]
-
     moments = cv2.moments(contour)
     if moments["m00"] <= 0.0:
         raise ValueError("cannot calculate ball silhouette centroid")
-    center_u = moments["m10"] / moments["m00"]
-    center_v = moments["m01"] / moments["m00"]
+    moment_center_u = moments["m10"] / moments["m00"]
+    moment_center_v = moments["m01"] / moments["m00"]
+
+    max_boundary_points = max(16, int(max_boundary_points))
+    quality_boundary = raw_boundary
+    if len(quality_boundary) > max_boundary_points:
+        indices = np.linspace(
+            0,
+            len(quality_boundary) - 1,
+            max_boundary_points,
+            dtype=np.int64,
+        )
+        quality_boundary = quality_boundary[indices]
 
     # OpenCV contours run through foreground pixel centers, while the actual
     # binary silhouette edge lies between foreground and background pixels.
@@ -173,25 +220,64 @@ def estimate_fixed_radius_sphere_from_mask(
     # correction, a 20 px radius ball is made about 2% too small and its range
     # is consequently overestimated by the same order.
     contour_edge_offset_px = float(contour_edge_offset_px)
+    quality_boundary = quality_boundary.copy()
     if contour_edge_offset_px:
-        outward = boundary - np.array([center_u, center_v])
+        outward = quality_boundary - np.array(
+            [moment_center_u, moment_center_v]
+        )
         outward_norm = np.linalg.norm(outward, axis=1)
         valid_outward = outward_norm > 1e-9
-        boundary[valid_outward] += (
+        quality_boundary[valid_outward] += (
             contour_edge_offset_px
             * outward[valid_outward]
             / outward_norm[valid_outward, None]
         )
 
-    fx, fy, cx, cy = _intrinsic_values(intrinsics)
-    normalized = np.column_stack(
-        (
-            (boundary[:, 0] - cx) / fx,
-            (boundary[:, 1] - cy) / fy,
-            np.ones(len(boundary)),
+    if boundary_model == "ellipse":
+        if fitted_ellipse is None:
+            raise ValueError("at least five contour points are required")
+        (center_u, center_v), ellipse_axes, ellipse_angle_deg = fitted_ellipse
+        semi_axis_x = 0.5 * float(ellipse_axes[0]) + contour_edge_offset_px
+        semi_axis_y = 0.5 * float(ellipse_axes[1]) + contour_edge_offset_px
+        sample_count = min(
+            max_boundary_points,
+            max(64, len(quality_boundary)),
         )
-    )
-    unit_rays = normalized / np.linalg.norm(normalized, axis=1)[:, None]
+        angles = np.linspace(
+            0.0,
+            2.0 * np.pi,
+            sample_count,
+            endpoint=False,
+        )
+        local_x = semi_axis_x * np.cos(angles)
+        local_y = semi_axis_y * np.sin(angles)
+        ellipse_angle = np.radians(float(ellipse_angle_deg))
+        cos_angle = np.cos(ellipse_angle)
+        sin_angle = np.sin(ellipse_angle)
+        boundary = np.column_stack(
+            (
+                center_u + cos_angle * local_x - sin_angle * local_y,
+                center_v + sin_angle * local_x + cos_angle * local_y,
+            )
+        )
+    else:
+        center_u = moment_center_u
+        center_v = moment_center_v
+        boundary = quality_boundary
+
+    fx, fy, cx, cy = _intrinsic_values(intrinsics)
+
+    def unit_rays_from_pixels(pixels):
+        normalized = np.column_stack(
+            (
+                (pixels[:, 0] - cx) / fx,
+                (pixels[:, 1] - cy) / fy,
+                np.ones(len(pixels)),
+            )
+        )
+        return normalized / np.linalg.norm(normalized, axis=1)[:, None]
+
+    unit_rays = unit_rays_from_pixels(boundary)
 
     center_ray = np.array(
         [(center_u - cx) / fx, (center_v - cy) / fy, 1.0],
@@ -226,7 +312,12 @@ def estimate_fixed_radius_sphere_from_mask(
     if not solution.success or not np.all(np.isfinite(solution.x)):
         raise ValueError(f"silhouette sphere optimizer failed: {solution.message}")
 
-    residuals = _tangent_residuals(solution.x, unit_rays, radius)
+    quality_unit_rays = unit_rays_from_pixels(quality_boundary)
+    residuals = _tangent_residuals(
+        solution.x,
+        quality_unit_rays,
+        radius,
+    )
     contour_rmse_m = float(np.sqrt(np.mean(residuals * residuals)))
     max_rmse_m = max(0.004, 0.08 * radius)
     if contour_rmse_m > max_rmse_m:
