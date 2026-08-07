@@ -6,7 +6,7 @@ from geometry_msgs.msg import PointStamped
 import os
 import csv
 from datetime import datetime
-
+# scp -r ./data ma@192.168.43.4:~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts
 class MultiSubscriber(Node):
     def __init__(self):
         super().__init__('multi_subscriber')
