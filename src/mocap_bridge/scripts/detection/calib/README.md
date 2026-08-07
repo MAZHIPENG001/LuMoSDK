@@ -387,16 +387,37 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
 ```bash
 python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
   --dirs \
-    src/mocap_bridge/scripts/data/s1 \
-    src/mocap_bridge/scripts/data/s2 \
-    src/mocap_bridge/scripts/data/s3 \
-    src/mocap_bridge/scripts/data/s4 \
-    src/mocap_bridge/scripts/data/s5 \
-    src/mocap_bridge/scripts/data/s6 \
+    src/mocap_bridge/scripts/data/0_refine/s1 \
+    src/mocap_bridge/scripts/data/0_refine/s2 \
+    src/mocap_bridge/scripts/data/0_refine/s3 \
+    src/mocap_bridge/scripts/data/0_refine/s4 \
+    src/mocap_bridge/scripts/data/0_refine/s5 \
+    src/mocap_bridge/scripts/data/0_refine/s6 \
   --input \
     src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json \
   --output \
     src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_ball_refined.json
+```
+```
+mirrorme@ubuntu:~/GithubDoc/LuMoSDK$ python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
+  --dirs \
+    src/mocap_bridge/scripts/data/0_refine/s1 \
+    src/mocap_bridge/scripts/data/0_refine/s2 \
+    src/mocap_bridge/scripts/data/0_refine/s3 \
+    src/mocap_bridge/scripts/data/0_refine/s4 \
+    src/mocap_bridge/scripts/data/0_refine/s5 \
+    src/mocap_bridge/scripts/data/0_refine/s6 \
+  --input \
+    src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json \
+  --output \
+    src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_ball_refined.json
+Traceback (most recent call last):
+  File "/home/mirrorme/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/refine_ball_extrinsic.py", line 281, in <module>
+    main()
+  File "/home/mirrorme/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/refine_ball_extrinsic.py", line 206, in main
+    raise ValueError(
+ValueError: 采样位置的三维分布退化，无法可靠估计旋转；最小/最大奇异值比=0.00010，需要增加横向、纵向和深度变化
+
 ```
 
 相机刚体 ID 默认从 `--input` 标定文件的 `rigid_id` 读取；需要覆盖时使用
