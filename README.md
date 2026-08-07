@@ -195,8 +195,8 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
 python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib \
   src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json \
-  --center-source filtered
-  --dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/s1
+  --center-source filtered \
+  --dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/s2
 ```
 
 绘图默认读取 `center_raw.csv`，避免滤波时延混入球心检测误差。需要检查启用滤波后的发布结果时，添加
