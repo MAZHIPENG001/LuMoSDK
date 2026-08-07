@@ -185,11 +185,13 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py --dir /path/to/data
 使用指定的手眼标定文件：
 
 ```bash
+# d435
 python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib \
   src/mocap_bridge/scripts/detection/calib/calib_realsense/handeye_ball_refined_ralsensed435.json
 ```
 ```bash
+# zed
 python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib \
   src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json
