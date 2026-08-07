@@ -362,7 +362,7 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib src/mocap_bridge/scripts/detection/calib/<相机类型_时间戳>/handeye_calibration.json
 ```
 
-当前 `plot_auto_calib.py` 使用刚体 `4`，并要求标定结果的
+当前 `plot_auto_calib.py` 使用刚体 `5`，并要求标定结果的
 `selected.mocap_pose_direction` 为 `rigid_to_world`。因此在本项目默认链路中，建议标定时显式设置
 `--mocap-pose-direction rigid_to_world`，或使用 ROS 参数
 `-p mocap_pose_direction:=rigid_to_world`。
@@ -370,7 +370,8 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
 如果后续任务专门使用 RGB-D 球心，且独立验证发现稳定的系统偏差，可再使用
 `scripts/refine_ball_extrinsic.py` 拟合“球心检测有效外参”。它不是基础手眼标定的替代品，输出也可能吸收
 深度和球心算法的系统误差。至少需要 3 组、推荐 6 组以上不同方向和距离的数据，并应保留额外数据做独立
-验证：
+验证。为避免把时间偏移吸收到外参中，推荐每组记录时让球和相机都保持静止；不要用尚未校正时间戳的运动
+轨迹做外参修正：
 
 ```bash
 python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
@@ -380,6 +381,8 @@ python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
 ```
 
 每个输入目录必须包含 `center_raw.csv` 和 `mocap.csv`。
+相机刚体 ID 默认从 `--input` 标定文件的 `rigid_id` 读取；需要覆盖时使用
+`--rigid-id <ID>`。
 
 ## 常见问题
 

@@ -9,6 +9,11 @@ import cv2
 from ultralytics import YOLO
 import time
 from record.target_tracker import TargetTracker
+from ball_geometry import (
+    estimate_fixed_radius_sphere_from_mask,
+    largest_component_mask,
+    make_inner_mask,
+)
 from sphere_fit import fit_fixed_radius_sphere
 import numpy as np
 
@@ -25,6 +30,26 @@ def parse_args(args=None):
         choices=("realsense", "zed"),
         default="realsense",
         help="相机类型（默认：realsense）",
+    )
+    parser.add_argument(
+        "--position-method",
+        choices=("silhouette", "depth"),
+        default="silhouette",
+        help=(
+            "球心恢复方法：silhouette 使用分割轮廓和已知半径，"
+            "depth 使用深度球面拟合（默认：silhouette）"
+        ),
+    )
+    parser.add_argument(
+        "--ball-radius-m",
+        type=float,
+        default=0.110,
+        help="球的实测物理半径，单位米（默认：0.110",
+    )
+    parser.add_argument(
+        "--one-euro-filter",
+        action="store_true",
+        help="对发布球心的 XYZ 同时启用 One Euro 滤波（默认不滤波）",
     )
     return parser.parse_known_args(args)
 
@@ -208,7 +233,13 @@ def make_depth_display(depth_image, depth_scale):
 
 
 class BallPublisher(Node):
-    def __init__(self, camera_type="realsense"):
+    def __init__(
+        self,
+        camera_type="realsense",
+        position_method="silhouette",
+        ball_radius_m=0.115,
+        use_one_euro_filter=False,
+    ):
         super().__init__('ball_publisher')
         # 创建两个发布者：表面点与球心
         self.surf_pub = self.create_publisher(PointStamped, '/ball_surface', 10)
@@ -231,13 +262,29 @@ class BallPublisher(Node):
         self.tracker=None
         self.tracker = TargetTracker()
 
-        self.ball_radius = 0.115
+        self.ball_radius = float(ball_radius_m)
+        if self.ball_radius <= 0.0:
+            raise ValueError("ball_radius_m must be positive")
+        self.position_method = position_method
+        self.use_one_euro_filter = bool(use_one_euro_filter)
         self.sphere_fit_failure_count = 0
+        self.silhouette_fit_failure_count = 0
         self.latest_sphere_fit_rmse_mm = None
+        self.latest_silhouette_fit_rmse_mm = None
+        self.latest_center_method = None
 
         self.kf = KalmanFilter3D(dt=1.0 / 60.0)
-        self.z_filter = OneEuroFilter1D(
-            min_cutoff=2.0, beta=5.0, derivative_cutoff=1.0
+        self.position_filters = [
+            OneEuroFilter1D(
+                min_cutoff=2.0, beta=5.0, derivative_cutoff=1.0
+            )
+            for _ in range(3)
+        ]
+
+        self.get_logger().info(
+            f"球心方法: {self.position_method}, "
+            f"球半径: {self.ball_radius * 1000.0:.1f} mm, "
+            f"One Euro: {'开启' if self.use_one_euro_filter else '关闭'}"
         )
 
         # 每秒统计一次成功获取图像的帧率和模型纯推理帧率。
@@ -248,6 +295,99 @@ class BallPublisher(Node):
 
         # 创建定时器（ * Hz 处理）
         self.timer = self.create_timer(1/60, self.process_frame)
+
+    @staticmethod
+    def _depth_fit_is_acceptable(sphere_fit):
+        return (
+            sphere_fit.rmse_m <= 0.015
+            and sphere_fit.median_abs_residual_m <= 0.010
+            and sphere_fit.inlier_fraction >= 0.35
+        )
+
+    def _estimate_depth_center(
+        self,
+        depth_image,
+        depth_mask,
+        intrinsics,
+        fallback_center,
+    ):
+        if fallback_center is None:
+            raise ValueError("掩码中心附近没有可用深度")
+        try:
+            masked_points = self.camera.get_masked_point_cloud(
+                depth_image=depth_image,
+                mask=depth_mask,
+                intrinsics=intrinsics,
+                max_points=2500,
+            )
+            sphere_fit = fit_fixed_radius_sphere(
+                masked_points,
+                radius=self.ball_radius,
+                initial_center=fallback_center,
+                min_points=80,
+                robust_scale_m=0.005,
+            )
+            if not self._depth_fit_is_acceptable(sphere_fit):
+                raise ValueError(
+                    "球拟合质量不足: "
+                    f"RMSE={sphere_fit.rmse_m * 1000.0:.1f}mm, "
+                    "median="
+                    f"{sphere_fit.median_abs_residual_m * 1000.0:.1f}mm, "
+                    f"inliers={sphere_fit.inlier_fraction:.1%}"
+                )
+            self.latest_sphere_fit_rmse_mm = sphere_fit.rmse_m * 1000.0
+            return sphere_fit.center.copy(), "depth-sphere"
+        except ValueError as error:
+            self.latest_sphere_fit_rmse_mm = None
+            self.sphere_fit_failure_count += 1
+            if (
+                self.sphere_fit_failure_count <= 3
+                or self.sphere_fit_failure_count % 60 == 0
+            ):
+                self.get_logger().warn(
+                    "深度球拟合失败，使用视线半径补偿回退值: "
+                    f"{error}"
+                )
+            return np.asarray(fallback_center, dtype=np.float64), "depth-ray"
+
+    def _estimate_center(
+        self,
+        mask,
+        depth_image,
+        depth_mask,
+        intrinsics,
+        fallback_center,
+    ):
+        self.latest_silhouette_fit_rmse_mm = None
+        self.latest_sphere_fit_rmse_mm = None
+
+        if self.position_method == "silhouette":
+            try:
+                silhouette_fit = estimate_fixed_radius_sphere_from_mask(
+                    mask,
+                    intrinsics,
+                    self.ball_radius,
+                )
+                self.latest_silhouette_fit_rmse_mm = (
+                    silhouette_fit.contour_rmse_m * 1000.0
+                )
+                return silhouette_fit.center.copy(), "silhouette"
+            except ValueError as error:
+                self.silhouette_fit_failure_count += 1
+                if (
+                    self.silhouette_fit_failure_count <= 3
+                    or self.silhouette_fit_failure_count % 60 == 0
+                ):
+                    self.get_logger().warn(
+                        f"轮廓球心恢复失败，尝试深度回退: {error}"
+                    )
+
+        return self._estimate_depth_center(
+            depth_image,
+            depth_mask,
+            intrinsics,
+            fallback_center,
+        )
 
     def process_frame(self):
         color_image, depth_image, frame_metadata = self.camera.get_images(
@@ -309,145 +449,134 @@ class BallPublisher(Node):
             best_result = results[0][max_conf_idx]
             display_image = best_result.plot()
             box = best_result.boxes.xyxy[0].cpu().numpy()
-            mask_data = best_result.masks.data[0].cpu().numpy().astype(bool)
-
-            mask_uint8 = mask_data.astype(np.uint8)
-            kernel = np.ones((5, 5), np.uint8)  # 可根据实际模糊程度调整核大小
-            eroded_mask = cv2.erode(mask_uint8, kernel, iterations=1)
-            mask_data = eroded_mask.astype(bool)
+            mask_data = largest_component_mask(
+                best_result.masks.data[0].cpu().numpy().astype(bool)
+            )
+            depth_mask = make_inner_mask(mask_data)
 
             u, v = ball_center(mask_data)
-            if u is None and v is None:
+            if u is None or v is None:
                 u, v = int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2)
-            # --- 基于全局掩码的鲁棒深度采样 ---
-            # 提取掩码覆盖范围内原始深度值(单位:m)
-            masked_depths_m = depth_image[mask_data] * self.camera.depth_scale
-            # 过滤无效深度（0 值）和极端飞点（> 10米）
-            valid_depths = masked_depths_m[(masked_depths_m > 0.05) & (masked_depths_m < 10.0)]
-            if len(valid_depths) > 10:  # 确保有足够的有效像素点
-                # # 取 10% 分位数，既能过滤噪点，又能锁定球面最前端的深度
-                # surface_z = np.percentile(valid_depths, 10)
-                # # 获取 3D 坐标
-                # real_x, real_y, real_z = self.camera.deproject_to_3d(u, v, surface_z)
+
+            # 深度表面点仅用于诊断和轮廓法失败时的回退。球心主估计
+            # 不再因深度空洞而中断，也不依赖有系统偏差的 ZED 球面深度。
+            surface_point = None
+            masked_depths_m = (
+                depth_image[depth_mask] * self.camera.depth_scale
+            )
+            valid_depths = masked_depths_m[
+                np.isfinite(masked_depths_m)
+                & (masked_depths_m > 0.05)
+                & (masked_depths_m < 10.0)
+            ]
+            if len(valid_depths) > 10:
                 real_x, real_y, real_z = self.camera.get_real_position(
                     u,
                     v,
                     window_size=9,
                     depth_frame=frame_metadata['depth_frame'],
                     intrinsics=frame_metadata['depth_intrinsics'],
-                    mask=mask_data,
+                    mask=depth_mask,
                 )
-                # 获取 3D 坐标
-                # real_x, real_y, real_z = self.camera.get_real_position(u,v)
                 if real_z is not None:
-                    # 表面点
+                    surface_point = np.array(
+                        [real_x, real_y, real_z], dtype=np.float64
+                    )
                     surf_msg = PointStamped()
                     surf_msg.header.stamp = capture_time
                     surf_msg.header.frame_id = "camera_color_optical_frame"
-                    surf_msg.point.x, surf_msg.point.y, surf_msg.point.z = real_x, real_y, real_z
+                    (
+                        surf_msg.point.x,
+                        surf_msg.point.y,
+                        surf_msg.point.z,
+                    ) = surface_point.tolist()
                     self.surf_pub.publish(surf_msg)
 
+            fallback_center = (
+                None
+                if surface_point is None
+                else compensate_ball_radius(
+                    *surface_point.tolist(), self.ball_radius
+                )
+            )
+            try:
+                raw_center, center_method = self._estimate_center(
+                    mask_data,
+                    depth_image,
+                    depth_mask,
+                    frame_metadata['depth_intrinsics'],
+                    fallback_center,
+                )
+            except ValueError as error:
+                self.get_logger().warn(f"本帧无法恢复球心: {error}")
+                raw_center = None
+                center_method = None
 
-                    # 以原来的视线半径补偿结果作为球拟合初值和失败回退值。
-                    fallback_center = compensate_ball_radius(
-                        real_x, real_y, real_z, self.ball_radius
-                    )
+            if raw_center is not None:
+                self.latest_center_method = center_method
+                raw_center_x, raw_center_y, raw_center_z = raw_center.tolist()
+                raw_center_msg = PointStamped()
+                raw_center_msg.header.stamp = capture_time
+                raw_center_msg.header.frame_id = "camera_color_optical_frame"
+                raw_center_msg.point.x = raw_center_x
+                raw_center_msg.point.y = raw_center_y
+                raw_center_msg.point.z = raw_center_z
+                self.raw_center_pub.publish(raw_center_msg)
 
-                    try:
-                        masked_points = self.camera.get_masked_point_cloud(
-                            depth_image=depth_image,
-                            mask=mask_data,
-                            intrinsics=frame_metadata['depth_intrinsics'],
-                            max_points=2500,
-                        )
-                        sphere_fit = fit_fixed_radius_sphere(
-                            masked_points,
-                            radius=self.ball_radius,
-                            initial_center=fallback_center,
-                            min_points=80,
-                            robust_scale_m=0.005,
-                        )
-                        if (
-                            sphere_fit.rmse_m > 0.015
-                            or sphere_fit.median_abs_residual_m > 0.010
-                            or sphere_fit.inlier_fraction < 0.35
-                        ):
-                            raise ValueError(
-                                "球拟合质量不足: "
-                                f"RMSE={sphere_fit.rmse_m * 1000.0:.1f}mm, "
-                                f"median={sphere_fit.median_abs_residual_m * 1000.0:.1f}mm, "
-                                f"inliers={sphere_fit.inlier_fraction:.1%}"
-                            )
-                        raw_center_x, raw_center_y, raw_center_z = (
-                            sphere_fit.center.tolist()
-                        )
-                        self.latest_sphere_fit_rmse_mm = (
-                            sphere_fit.rmse_m * 1000.0
-                        )
-                    except ValueError as error:
-                        # 深度缺失或遮挡严重时仍发布旧方法的结果，避免轨迹中断。
-                        raw_center_x, raw_center_y, raw_center_z = fallback_center
-                        self.latest_sphere_fit_rmse_mm = None
-                        self.sphere_fit_failure_count += 1
-                        if (
-                            self.sphere_fit_failure_count <= 3
-                            or self.sphere_fit_failure_count % 60 == 0
-                        ):
-                            self.get_logger().warn(
-                                f"球拟合失败，使用视线半径补偿回退值: {error}"
-                            )
-
-                    raw_center_msg = PointStamped()
-                    raw_center_msg.header.stamp = capture_time
-                    raw_center_msg.header.frame_id = "camera_color_optical_frame"
-                    raw_center_msg.point.x = raw_center_x
-                    raw_center_msg.point.y = raw_center_y
-                    raw_center_msg.point.z = raw_center_z
-                    self.raw_center_pub.publish(raw_center_msg)
-
+                center = raw_center.copy()
+                if self.use_one_euro_filter:
                     capture_time_sec = (
                         capture_time.sec + capture_time.nanosec * 1e-9
                     )
-                    center_x = raw_center_x
-                    center_y = raw_center_y
-                    center_z = self.z_filter.filter(
-                        raw_center_z, capture_time_sec
+                    center = np.array(
+                        [
+                            position_filter.filter(value, capture_time_sec)
+                            for position_filter, value in zip(
+                                self.position_filters, raw_center
+                            )
+                        ],
+                        dtype=np.float64,
                     )
-                    # raw_center_x, raw_center_y, raw_center_z = compensate_ball_radius(real_x, real_y, real_z, self.ball_radius)
-                    # self.kf.predict()
-                    # z_measurement = np.array([raw_center_x, raw_center_y, raw_center_z])
-                    # center_x, center_y, center_z = self.kf.update(z_measurement)
+                center_x, center_y, center_z = center.tolist()
 
+                center_msg = PointStamped()
+                center_msg.header.stamp = capture_time
+                center_msg.header.frame_id = "camera_color_optical_frame"
+                center_msg.point.x = center_x
+                center_msg.point.y = center_y
+                center_msg.point.z = center_z
+                self.center_pub.publish(center_msg)
 
-                    center_msg = PointStamped()
-                    center_msg.header.stamp = capture_time
-                    center_msg.header.frame_id = "camera_color_optical_frame"
-                    center_msg.point.x, center_msg.point.y, center_msg.point.z = center_x, center_y, center_z
-                    self.center_pub.publish(center_msg)
+                if self.tracker is not None and surface_point is not None:
+                    self.tracker.update(
+                        *surface_point.tolist(), center_x, center_y, center_z
+                    )
 
-                    # 记录数据
-                    if self.tracker is not None:
-                        self.tracker.update(real_x, real_y, real_z, center_x, center_y, center_z)
-
-                    # 可视化
-                    annotated = display_image
-                    cv2.circle(annotated, (u, v), 5, (0, 0, 255), -1)
-                    cv2.putText(annotated, f"z: {real_z*1000:.6f}mm", (u-20, v-15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-                    cv2.putText(annotated, f"Center Z: {center_z * 1000:.6f}mm", (u-20, v+20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    if self.latest_sphere_fit_rmse_mm is not None:
-                        cv2.putText(
-                            annotated,
-                            f"Sphere fit RMSE: {self.latest_sphere_fit_rmse_mm:.2f}mm",
-                            (u-20, v+45),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.55,
-                            (0, 255, 255),
-                            2,
-                        )
-                    display_image = annotated
-            else:
-                self.get_logger().warn("掩码内无有效深度点！")
-                display_image = best_result.plot()
+                annotated = display_image
+                cv2.circle(annotated, (u, v), 5, (0, 0, 255), -1)
+                cv2.putText(
+                    annotated,
+                    f"Center Z: {center_z * 1000.0:.1f}mm ({center_method})",
+                    (max(5, u - 80), max(25, v - 15)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 0),
+                    2,
+                )
+                fit_rmse_mm = self.latest_silhouette_fit_rmse_mm
+                if fit_rmse_mm is None:
+                    fit_rmse_mm = self.latest_sphere_fit_rmse_mm
+                if fit_rmse_mm is not None:
+                    cv2.putText(
+                        annotated,
+                        f"Fit RMSE: {fit_rmse_mm:.2f}mm",
+                        (max(5, u - 80), min(annotated.shape[0] - 10, v + 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 255),
+                        2,
+                    )
+                display_image = annotated
 
         depth_display = make_depth_display(
             depth_image,
@@ -479,7 +608,12 @@ class BallPublisher(Node):
 def main(args=None):
     cli_args, ros_args = parse_args(args)
     rclpy.init(args=ros_args)
-    node = BallPublisher(camera_type=cli_args.camera)
+    node = BallPublisher(
+        camera_type=cli_args.camera,
+        position_method=cli_args.position_method,
+        ball_radius_m=cli_args.ball_radius_m,
+        use_one_euro_filter=cli_args.one_euro_filter,
+    )
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

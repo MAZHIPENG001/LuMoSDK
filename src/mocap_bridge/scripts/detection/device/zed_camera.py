@@ -352,7 +352,24 @@ class ZEDCamera:
 
                 self.zed.retrieve_image(image, sl.VIEW.LEFT)
                 self.zed.retrieve_measure(depth, sl.MEASURE.DEPTH)
-                capture_time_ns = time.time_ns()
+                # The SDK IMAGE timestamp is the sensor frame timestamp in
+                # host-clock Epoch nanoseconds.  time.time_ns() here would
+                # instead mark the end of grab/retrieve and adds a variable
+                # depth-processing delay to moving-ball comparisons.
+                image_timestamp = self.zed.get_timestamp(
+                    sl.TIME_REFERENCE.IMAGE
+                )
+                get_nanoseconds = getattr(
+                    image_timestamp, "get_nanoseconds", None
+                )
+                if get_nanoseconds is not None:
+                    capture_time_ns = int(get_nanoseconds())
+                else:
+                    capture_time_ns = int(
+                        image_timestamp.get_milliseconds() * 1_000_000
+                    )
+                if capture_time_ns <= 0:
+                    capture_time_ns = time.time_ns()
 
                 color_image = np.asarray(image.get_data())
                 depth_image = np.asarray(depth.get_data())

@@ -54,6 +54,15 @@ def main():
         default=default_handeye_file,
         help="手眼标定结果 handeye_calibration.json 路径",
     )
+    parser.add_argument(
+        "--center-source",
+        choices=("raw", "filtered"),
+        default="raw",
+        help=(
+            "球心数据源：raw 读取 center_raw.csv，filtered 读取 "
+            "center.csv（默认：raw）"
+        ),
+    )
     args = parser.parse_args()
 
     if args.dir:
@@ -63,11 +72,18 @@ def main():
         data_dir = get_latest_data_dir(base_dir)
         print(f"-> 未指定目录，正在自动读取[最新]的文件夹: {data_dir}")
 
-    center_path = os.path.join(data_dir, "center.csv")
+    center_filename = (
+        "center_raw.csv" if args.center_source == "raw" else "center.csv"
+    )
+    center_path = os.path.join(data_dir, center_filename)
     mocap_path = os.path.join(data_dir, "mocap.csv")
     if not os.path.exists(center_path) or not os.path.exists(mocap_path):
-        print(f"错误: 文件夹 {data_dir} 内未同时包含 center.csv 和 mocap.csv")
+        print(
+            f"错误: 文件夹 {data_dir} 内未同时包含 "
+            f"{center_filename} 和 mocap.csv"
+        )
         return
+    print(f"-> 球心数据源: {center_filename}")
 
     # 加载和预处理数据
     center_df = pd.read_csv(center_path)
@@ -88,7 +104,7 @@ def main():
     cam_pose = mocap_df[(mocap_df["rigid_id"] == 5) & (mocap_df["is_track"] == 1)].dropna(axis=1, how="all")
 
     if center_df.empty or ball_gt.empty or cam_pose.empty:
-        print("错误: center、Rigid 5 球心或 Rigid 4 相机位姿数据为空")
+        print("错误: center、Marker 1 球位置或 Rigid 5 相机位姿数据为空")
         print(f"center_df.empty={center_df.empty}")
         print(f"ball_gt.empty={ball_gt.empty}")
         print(f"cam_pose.empty={cam_pose.empty}")
@@ -99,12 +115,12 @@ def main():
     ball_gt = ball_gt.drop_duplicates(subset=["time"]).set_index("time")
     cam_pose = cam_pose.drop_duplicates(subset=["time"]).set_index("time")
     if len(ball_gt) < 2 or len(cam_pose) < 2:
-        print("错误: Rigid 5 或 Rigid 4 的有效位姿少于 2 帧，无法插值")
+        print("错误: Marker 1 或 Rigid 5 的有效数据少于 2 帧，无法插值")
         return
     start_time = max(center_df.index[0], ball_gt.index[0], cam_pose.index[0])
     end_time = min(center_df.index[-1], ball_gt.index[-1], cam_pose.index[-1])
     if start_time >= end_time:
-        print("错误: center、Rigid 5 与 Rigid 4 没有重叠的时间范围")
+        print("错误: center、Marker 1 与 Rigid 5 没有重叠的时间范围")
         return
     aligned_df = center_df[(center_df.index >= start_time) & (center_df.index <= end_time)].copy()
     if aligned_df.empty:
@@ -116,8 +132,8 @@ def main():
     aligned_df["gt_y"] = np.interp(aligned_df.index, ball_gt.index, ball_gt[gt_keys[1]])
     aligned_df["gt_z"] = np.interp(aligned_df.index, ball_gt.index, ball_gt[gt_keys[2]])
     
-    # 相机和 Rigid4 固定连接，但整个组合体会运动。对每个视觉球心时间戳，
-    # 实时插值 Rigid4 在动捕世界坐标系中的平移和旋转，不能使用固定参考位姿。
+    # 相机和 Rigid5 固定连接，但整个组合体会运动。对每个视觉球心时间戳，
+    # 实时插值 Rigid5 在动捕世界坐标系中的平移和旋转，不能使用固定参考位姿。
     aligned_df["cam_rx"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rx"])
     aligned_df["cam_ry"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["ry"])
     aligned_df["cam_rz"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rz"])
@@ -233,11 +249,36 @@ def main():
     mean_error = errors.mean(axis=0)
     axis_rmse = np.sqrt(np.mean(errors ** 2, axis=0))
     rmse_3d = np.sqrt(np.mean(np.sum(errors ** 2, axis=1)))
+    centered_rmse_3d = np.sqrt(
+        np.mean(np.sum((errors - mean_error) ** 2, axis=1))
+    )
+
+    # 将动捕球位置反算回相机坐标系，把距离误差与方向误差分开。固定球
+    # 上方向正确但距离错误，通常指向球心恢复/深度，而不是手眼旋转。
+    P_gt_world = aligned_df[["gt_x", "gt_y", "gt_z"]].to_numpy()
+    P_gt_rigid = interp_rots.inv().apply(P_gt_world - cam_T)
+    P_gt_camera = (P_gt_rigid - t_calib) @ R_calib
+    measured_range = np.linalg.norm(P_cam, axis=1)
+    gt_range = np.linalg.norm(P_gt_camera, axis=1)
+    valid_direction = (measured_range > 1e-9) & (gt_range > 1e-9)
+    direction_cosine = np.sum(P_cam * P_gt_camera, axis=1) / np.maximum(
+        measured_range * gt_range, 1e-12
+    )
+    direction_error_deg = np.degrees(
+        np.arccos(np.clip(direction_cosine[valid_direction], -1.0, 1.0))
+    )
+    range_error = measured_range - gt_range
     print(
         "-> 误差统计 (mm):\n"
         f"   mean XYZ = {np.round(mean_error, 3)}\n"
         f"   RMSE XYZ = {np.round(axis_rmse, 3)}\n"
-        f"   3D RMSE  = {rmse_3d:.3f}"
+        f"   3D RMSE  = {rmse_3d:.3f}\n"
+        f"   去均值 3D RMSE = {centered_rmse_3d:.3f}\n"
+        f"   相机径向误差 mean/std = "
+        f"{np.mean(range_error):.3f}/{np.std(range_error):.3f} mm\n"
+        f"   相机方向误差 median/P95 = "
+        f"{np.median(direction_error_deg):.3f}/"
+        f"{np.percentile(direction_error_deg, 95):.3f} deg"
     )
     
     # ================= 可视化绘图 (保持不变) =================

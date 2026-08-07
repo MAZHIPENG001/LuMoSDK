@@ -99,13 +99,13 @@ source /opt/ros/humble/setup.bash
 cd src/mocap_bridge/scripts/detection
 ```
 
-使用 RealSense（默认），采集配置为 `640×480 @ 120 FPS`：
+使用 RealSense（默认），采集配置为 `640×480 @ 60 FPS`：
 
 ```bash
 python3 eval_ros.py --camera realsense
 ```
 
-使用 ZED，采集配置为 `HD1200 @ 120 FPS`：
+使用 ZED，采集配置为原生 `SVGA（960×600）@ 120 FPS`：
 
 ```bash
 python3 eval_ros.py --camera zed
@@ -114,6 +114,21 @@ python3 eval_ros.py --camera zed
 `--camera` 可选值为 `realsense` 和 `zed`。程序只导入当前选择的相机驱动，
 因此选择 ZED 时不会导入 `pyrealsense2`，选择 RealSense 时不会导入
 `pyzed.sl`。
+
+球心默认使用 `silhouette` 方法：根据 YOLO 分割轮廓、相机内参和球的已知物理半径，直接恢复三维球心，
+不使用光滑球面上可能存在系统偏差的双目深度。默认半径为 `0.110 m`，使用前必须实测目标球直径并设置正确
+半径；半径误差会近似按相同比例变成距离误差：
+
+```bash
+python3 eval_ros.py \
+  --camera zed \
+  --position-method silhouette \
+  --ball-radius-m 0.110
+```
+
+如需对照原来的深度球面拟合，可使用 `--position-method depth`。轮廓法失败时也会自动回退到深度法，预览中
+会显示本帧实际使用的 `silhouette`、`depth-sphere` 或 `depth-ray`。默认发布未滤波球心，便于评估运动目标的
+真实误差；确实需要平滑输出时可加 `--one-euro-filter`，此时会对 XYZ 三轴使用相同滤波策略。
 
 ### 订阅数据
 
@@ -163,6 +178,11 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib \
   src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json
 ```
+
+绘图默认读取 `center_raw.csv`，避免滤波时延混入球心检测误差。需要检查启用滤波后的发布结果时，添加
+`--center-source filtered`。终端统计还会把误差拆成相机径向误差和方向误差：固定球上方向误差小而径向误差
+大，通常说明问题在深度/球心距离恢复；二者都随运动明显增大时还应检查时间同步。
+
 ## 其他工具
 
 项目内其他工具的详细使用说明如下：

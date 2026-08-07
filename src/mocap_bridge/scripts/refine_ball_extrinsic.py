@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refine camera-to-Rigid-4 alignment from ball-center/mocap pairs.
+"""Refine camera-to-rigid alignment from ball-center/mocap pairs.
 
 This estimates an *effective* T_rigid_camera that absorbs repeatable RGB-D
 ball-center bias as well as residual hand-eye bias.  Use several recordings
@@ -40,7 +40,7 @@ def add_time(dataframe):
     return dataframe.sort_values("time").drop_duplicates("time")
 
 
-def load_recording(data_dir):
+def load_recording(data_dir, rigid_id):
     center_path = os.path.join(data_dir, "center_raw.csv")
     mocap_path = os.path.join(data_dir, "mocap.csv")
     if not os.path.isfile(center_path) or not os.path.isfile(mocap_path):
@@ -54,7 +54,8 @@ def load_recording(data_dir):
         subset=["x", "y", "z"]
     )
     rigid = mocap[
-        (mocap["rigid_id"] == 4) & (mocap["is_track"] == 1)
+        (mocap["rigid_id"] == int(rigid_id))
+        & (mocap["is_track"] == 1)
     ].dropna(subset=["rx", "ry", "rz", "qx", "qy", "qz", "qw"])
 
     if len(center) < 3 or len(marker) < 2 or len(rigid) < 2:
@@ -82,8 +83,8 @@ def load_recording(data_dir):
         Rotation.from_quat(rigid[["qx", "qy", "qz", "qw"]].to_numpy()),
     )(times)
 
-    # The desired point in Rigid-4 coordinates follows directly from the
-    # mocap world point and the measured Rigid-4 pose.
+    # The desired point in camera-rigid coordinates follows directly from the
+    # mocap world point and the measured rigid pose.
     point_rigid_mm = rigid_rotation.inv().apply(
         marker_world_mm - rigid_translation_mm
     )
@@ -169,19 +170,30 @@ def main():
         script_dir, "detection", "calib", "handeye_ball_refined.json"
     )
     parser = argparse.ArgumentParser(
-        description="用视觉球心和 Marker 1 真值修正 camera -> Rigid 4 外参"
+        description="用视觉球心和 Marker 1 真值修正 camera -> rigid 外参"
     )
     parser.add_argument("--dirs", nargs="+", required=True, help="标定数据目录")
     parser.add_argument("--input", default=default_input, help="原手眼标定 JSON")
     parser.add_argument("--output", default=default_output, help="候选标定输出 JSON")
+    parser.add_argument(
+        "--rigid-id",
+        type=int,
+        default=None,
+        help="相机刚体 ID；默认读取输入标定 JSON 的 rigid_id",
+    )
     parser.add_argument("--max-samples-per-dir", type=int, default=200)
     args = parser.parse_args()
 
     if len(args.dirs) < 3:
         raise ValueError("至少需要 3 组、推荐 6 组以上不同球位置的数据")
-    recordings = [load_recording(path) for path in args.dirs]
     with open(args.input, "r", encoding="utf-8") as input_file:
         original = json.load(input_file)
+    rigid_id = args.rigid_id
+    if rigid_id is None:
+        rigid_id = original.get("rigid_id")
+    if rigid_id is None:
+        raise ValueError("输入标定 JSON 没有 rigid_id，请显式传入 --rigid-id")
+    recordings = [load_recording(path, rigid_id) for path in args.dirs]
     old_transform = np.asarray(
         original["selected"]["T_rigid_camera"], dtype=np.float64
     )
@@ -224,9 +236,10 @@ def main():
     output["T_camera_rigid"] = invert_transform(new_transform).tolist()
     output["ball_center_refinement"] = {
         "description": (
-            "Effective camera optical -> Rigid 4 transform fitted from "
+            f"Effective camera optical -> Rigid {rigid_id} transform fitted from "
             "center_raw.csv and mocap Marker 1 correspondences"
         ),
+        "rigid_id": int(rigid_id),
         "source_directories": [item["data_dir"] for item in recordings],
         "max_samples_per_directory": args.max_samples_per_dir,
         "geometry_singular_values": singular_values.tolist(),

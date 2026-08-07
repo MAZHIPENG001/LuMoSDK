@@ -22,7 +22,7 @@ __pycache__/
 *.pyc
 
 # 测试数据
-src/mocap_bridge/scripts/data/
+# src/mocap_bridge/scripts/data/
 src/mocap_bridge/scripts/detection/BALL_data
 src/mocap_bridge/scripts/detection/output
 
