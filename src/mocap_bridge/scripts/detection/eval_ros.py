@@ -909,6 +909,7 @@ class BallPublisher(Node):
                 window_name += " + Depth"
             cv2.imshow(window_name, preview_image)
             if cv2.waitKey(1) & 0xFF == ord('q') and rclpy.ok():
+                exit()
                 rclpy.shutdown()
 
     def destroy_node(self):
