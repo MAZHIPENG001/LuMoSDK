@@ -38,10 +38,10 @@ def set_axes_equal_3d(ax, points):
     ax.set_zlim(axis_center[2] - half_range, axis_center[2] + half_range)
 def main():
     # 配置参数解析
-    base_dir = ("/home/mirrorme/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    base_dir = os.path.join(script_dir, "data")
     parser = argparse.ArgumentParser(description="动捕与视觉数据对齐与可视化工具")
     parser.add_argument("--dir",type=str,default=None,help="数据文件夹路径。",)
-    script_dir = os.path.dirname(os.path.abspath(__file__))
     default_handeye_file = os.path.join(
         script_dir,
         "detection",
