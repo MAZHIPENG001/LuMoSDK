@@ -36,6 +36,138 @@ def set_axes_equal_3d(ax, points):
     ax.set_xlim(axis_center[0] - half_range, axis_center[0] + half_range)
     ax.set_ylim(axis_center[1] - half_range, axis_center[1] + half_range)
     ax.set_zlim(axis_center[2] - half_range, axis_center[2] + half_range)
+
+
+def robust_fixed_pose(cam_pose):
+    """计算固定相机的鲁棒位姿并返回离群值诊断信息。"""
+    translations = cam_pose[["rx", "ry", "rz"]].to_numpy(
+        dtype=np.float64
+    )
+    rotations = R_scipy.from_quat(
+        cam_pose[["qx", "qy", "qz", "qw"]].to_numpy(dtype=np.float64)
+    )
+
+    initial_rotation = rotations.mean()
+    rotation_errors_deg = np.degrees(
+        (initial_rotation.inv() * rotations).magnitude()
+    )
+    rotation_median = float(np.median(rotation_errors_deg))
+    rotation_mad = float(
+        np.median(np.abs(rotation_errors_deg - rotation_median))
+    )
+    rotation_outlier_limit_deg = max(
+        0.2,
+        rotation_median + 4.0 * 1.4826 * rotation_mad,
+    )
+
+    initial_translation = np.median(translations, axis=0)
+    translation_errors_mm = np.linalg.norm(
+        translations - initial_translation,
+        axis=1,
+    )
+    translation_median_mm = float(np.median(translation_errors_mm))
+    translation_mad_mm = float(
+        np.median(
+            np.abs(translation_errors_mm - translation_median_mm)
+        )
+    )
+    translation_outlier_limit_mm = max(
+        0.5,
+        translation_median_mm + 4.0 * 1.4826 * translation_mad_mm,
+    )
+
+    inliers = (
+        (rotation_errors_deg <= rotation_outlier_limit_deg)
+        & (translation_errors_mm <= translation_outlier_limit_mm)
+    )
+    # 极端情况下宁可保留全部样本，也不要用少量样本定义固定外参。
+    if np.count_nonzero(inliers) < max(3, int(0.5 * len(inliers))):
+        inliers = np.ones(len(inliers), dtype=bool)
+
+    fixed_rotation = rotations[inliers].mean()
+    fixed_translation = np.median(translations[inliers], axis=0)
+
+    final_rotation_errors_deg = np.degrees(
+        (fixed_rotation.inv() * rotations).magnitude()
+    )
+    final_translation_errors_mm = np.linalg.norm(
+        translations - fixed_translation,
+        axis=1,
+    )
+    diagnostics = {
+        "sample_count": int(len(inliers)),
+        "inlier_count": int(np.count_nonzero(inliers)),
+        "rotation_p95_deg": float(
+            np.percentile(final_rotation_errors_deg[inliers], 95)
+        ),
+        "rotation_max_deg": float(np.max(final_rotation_errors_deg)),
+        "translation_p95_mm": float(
+            np.percentile(final_translation_errors_mm[inliers], 95)
+        ),
+        "translation_max_mm": float(np.max(final_translation_errors_mm)),
+    }
+    return fixed_rotation, fixed_translation, diagnostics
+
+
+def interpolate_camera_pose(cam_pose, query_times):
+    """将 Rigid 位姿插值到视觉球心时间戳。"""
+    key_times = cam_pose.index.to_numpy(dtype=np.float64)
+    key_rots = R_scipy.from_quat(
+        cam_pose[["qx", "qy", "qz", "qw"]].to_numpy(dtype=np.float64)
+    )
+    rotations = Slerp(key_times, key_rots)(query_times)
+    translations = np.column_stack(
+        [
+            np.interp(query_times, key_times, cam_pose[key].to_numpy())
+            for key in ("rx", "ry", "rz")
+        ]
+    )
+    return rotations, translations
+
+
+def select_camera_pose(
+    cam_pose,
+    query_times,
+    mode,
+    static_translation_threshold_mm,
+    static_rotation_threshold_deg,
+):
+    """根据配置选择逐帧或固定的相机位姿。"""
+    fixed_rotation, fixed_translation, diagnostics = robust_fixed_pose(
+        cam_pose
+    )
+    camera_is_static = (
+        diagnostics["translation_p95_mm"]
+        <= static_translation_threshold_mm
+        and diagnostics["rotation_p95_deg"]
+        <= static_rotation_threshold_deg
+    )
+    selected_mode = mode
+    if mode == "auto":
+        selected_mode = "fixed" if camera_is_static else "interpolated"
+
+    if selected_mode == "fixed":
+        rotations = R_scipy.from_quat(
+            np.repeat(
+                fixed_rotation.as_quat().reshape(1, 4),
+                len(query_times),
+                axis=0,
+            )
+        )
+        translations = np.repeat(
+            fixed_translation.reshape(1, 3),
+            len(query_times),
+            axis=0,
+        )
+    else:
+        rotations, translations = interpolate_camera_pose(
+            cam_pose,
+            query_times,
+        )
+
+    return rotations, translations, selected_mode, camera_is_static, diagnostics
+
+
 def main():
     # 配置参数解析
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -63,7 +195,33 @@ def main():
             "center.csv（默认：raw）"
         ),
     )
+    parser.add_argument(
+        "--camera-pose-mode",
+        choices=("auto", "interpolated", "fixed"),
+        default="auto",
+        help=(
+            "Rigid 5 位姿模式：auto 自动识别固定相机，interpolated "
+            "逐帧插值，fixed 使用鲁棒平均位姿（默认：auto）"
+        ),
+    )
+    parser.add_argument(
+        "--static-camera-translation-mm",
+        type=float,
+        default=3.0,
+        help="auto 模式判定固定相机的平移 P95 阈值（默认：3 mm）",
+    )
+    parser.add_argument(
+        "--static-camera-rotation-deg",
+        type=float,
+        default=1.0,
+        help="auto 模式判定固定相机的旋转 P95 阈值（默认：1 deg）",
+    )
     args = parser.parse_args()
+
+    if args.static_camera_translation_mm <= 0.0:
+        parser.error("--static-camera-translation-mm 必须大于 0")
+    if args.static_camera_rotation_deg <= 0.0:
+        parser.error("--static-camera-rotation-deg 必须大于 0")
 
     if args.dir:
         data_dir = args.dir
@@ -132,17 +290,53 @@ def main():
     aligned_df["gt_y"] = np.interp(aligned_df.index, ball_gt.index, ball_gt[gt_keys[1]])
     aligned_df["gt_z"] = np.interp(aligned_df.index, ball_gt.index, ball_gt[gt_keys[2]])
     
-    # 相机和 Rigid5 固定连接，但整个组合体会运动。对每个视觉球心时间戳，
-    # 实时插值 Rigid5 在动捕世界坐标系中的平移和旋转，不能使用固定参考位姿。
-    aligned_df["cam_rx"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rx"])
-    aligned_df["cam_ry"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["ry"])
-    aligned_df["cam_rz"] = np.interp(aligned_df.index, cam_pose.index, cam_pose["rz"])
-
-    key_times = cam_pose.index.values
-    key_rots = R_scipy.from_quat(cam_pose[["qx", "qy", "qz", "qw"]].values)
-    slerp = Slerp(key_times, key_rots)
-    interp_rots = slerp(aligned_df.index.values)
-    cam_T = aligned_df[["cam_rx", "cam_ry", "cam_rz"]].values
+    # 只用视觉数据覆盖时段内的 Rigid 5 样本判断相机是否静止，避免采集
+    # 开始前或结束后的移动影响 auto 模式。固定相机使用鲁棒平均位姿，
+    # 防止动捕四元数的少量跳点被放大成远距离目标的世界坐标尖峰。
+    # 在分析区间两端各保留一个相邻样本，确保逐帧模式的 Slerp 查询
+    # 始终落在关键帧范围内。
+    pose_times = cam_pose.index.to_numpy(dtype=np.float64)
+    pose_start = max(
+        0,
+        int(np.searchsorted(pose_times, start_time, side="right")) - 1,
+    )
+    pose_end = min(
+        len(cam_pose),
+        int(np.searchsorted(pose_times, end_time, side="left")) + 1,
+    )
+    pose_window = cam_pose.iloc[pose_start:pose_end]
+    if len(pose_window) < 2:
+        print("错误: 重叠时间范围内的 Rigid 5 位姿少于 2 帧")
+        return
+    (
+        interp_rots,
+        cam_T,
+        selected_pose_mode,
+        camera_is_static,
+        pose_diagnostics,
+    ) = select_camera_pose(
+        pose_window,
+        aligned_df.index.to_numpy(dtype=np.float64),
+        args.camera_pose_mode,
+        args.static_camera_translation_mm,
+        args.static_camera_rotation_deg,
+    )
+    print(
+        "-> Rigid 5 位姿: "
+        f"requested={args.camera_pose_mode}, selected={selected_pose_mode}, "
+        f"static={'yes' if camera_is_static else 'no'}"
+    )
+    print(
+        "   inliers="
+        f"{pose_diagnostics['inlier_count']}/"
+        f"{pose_diagnostics['sample_count']}, "
+        "translation P95/max="
+        f"{pose_diagnostics['translation_p95_mm']:.3f}/"
+        f"{pose_diagnostics['translation_max_mm']:.3f} mm, "
+        "rotation P95/max="
+        f"{pose_diagnostics['rotation_p95_deg']:.3f}/"
+        f"{pose_diagnostics['rotation_max_deg']:.3f} deg"
+    )
 
     # ---------------------------------------------------------
     # 核心修改区：使用手眼标定结果计算世界坐标

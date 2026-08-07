@@ -196,11 +196,42 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib \
   src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json \
   --center-source filtered \
-  --dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/s2
+  --camera-pose-mode auto \
+  --dir ~/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data/20260807_141345
 ```
 
 绘图默认读取 `center_raw.csv`，避免滤波时延混入球心检测误差。需要检查启用滤波后的发布结果时，添加
 `--center-source filtered`。终端统计还会把误差拆成相机径向误差和方向误差：固定球上方向误差小而径向误差大，通常说明问题在深度/球心距离恢复；二者都随运动明显增大时还应检查时间同步。
+
+#### Rigid 5 相机位姿模式
+
+当相机局部坐标中的检测曲线较平滑，但图 2 转换到动捕世界坐标后出现尖峰时，通常是静止相机对应的 Rigid 5 四元数存在少量跳点。`plot_auto_calib.py` 通过 `--camera-pose-mode` 控制相机位姿的处理方式：
+
+- `auto`：默认模式。根据视觉数据覆盖时段内 Rigid 5 的平移和旋转变化自动判断相机是否静止；静止时使用剔除离群值后的鲁棒平均位姿，运动时使用逐帧插值。
+- `fixed`：确认采集期间相机固定时，强制使用鲁棒平均位姿，避免四元数跳点被目标距离放大成世界坐标尖峰。
+- `interpolated`：相机在采集期间发生移动时，对每个视觉时间戳逐帧执行平移插值和四元数 Slerp。
+
+固定相机可以显式执行：
+
+```bash
+python3 src/mocap_bridge/scripts/plot_auto_calib.py \
+  --handeye-calib \
+  src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json \
+  --center-source filtered \
+  --camera-pose-mode fixed
+```
+
+移动相机应使用：
+
+```bash
+python3 src/mocap_bridge/scripts/plot_auto_calib.py \
+  --handeye-calib \
+  src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json \
+  --center-source filtered \
+  --camera-pose-mode interpolated
+```
+
+`auto` 默认使用平移 P95 不超过 `3 mm`、旋转 P95 不超过 `1 deg` 作为静止判据，可分别通过 `--static-camera-translation-mm` 和 `--static-camera-rotation-deg` 调整。程序会输出最终选择的模式、保留的 Rigid 5 样本数，以及平移和旋转的 P95/最大偏差，便于确认图 2 是否受动捕位姿抖动影响。
 
 ## 其他工具
 
