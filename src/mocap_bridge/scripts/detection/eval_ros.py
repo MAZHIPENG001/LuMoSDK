@@ -14,7 +14,6 @@ from ball_geometry import (
     largest_component_mask,
     make_inner_mask,
 )
-from motion_gate import BallMotionGate
 from sphere_fit import fit_fixed_radius_sphere
 import numpy as np
 
@@ -61,29 +60,6 @@ def parse_args(args=None):
         help="关闭 /ball_center 的 One Euro 滤波",
     )
     parser.set_defaults(use_one_euro_filter=True)
-    parser.add_argument(
-        "--disable-motion-gate",
-        action="store_true",
-        help="关闭球心运动一致性门控（默认开启）",
-    )
-    parser.add_argument(
-        "--max-ball-speed-mps",
-        type=float,
-        default=8.0,
-        help="允许运动球的最大表观速度，单位 m/s（默认：8.0）",
-    )
-    parser.add_argument(
-        "--max-motion-innovation-m",
-        type=float,
-        default=0.25,
-        help="测量与匀速预测的最大偏差，单位米（默认：0.25）",
-    )
-    parser.add_argument(
-        "--max-prediction-sec",
-        type=float,
-        default=0.25,
-        help="极值发生后允许发布预测球心的最长时间（默认：0.25 秒）",
-    )
     return parser.parse_known_args(args)
 
 
@@ -272,10 +248,6 @@ class BallPublisher(Node):
         position_method="silhouette",
         ball_radius_m=0.110,
         use_one_euro_filter=True,
-        use_motion_gate=True,
-        max_ball_speed_mps=8.0,
-        max_motion_innovation_m=0.25,
-        max_prediction_sec=0.25,
     ):
         super().__init__('ball_publisher')
         # 创建两个发布者：表面点与球心
@@ -304,19 +276,11 @@ class BallPublisher(Node):
             raise ValueError("ball_radius_m must be positive")
         self.position_method = position_method
         self.use_one_euro_filter = bool(use_one_euro_filter)
-        self.use_motion_gate = bool(use_motion_gate)
         self.sphere_fit_failure_count = 0
         self.silhouette_fit_failure_count = 0
         self.latest_sphere_fit_rmse_mm = None
         self.latest_silhouette_fit_rmse_mm = None
         self.latest_center_method = None
-        self.motion_rejection_count = 0
-
-        self.motion_gate = BallMotionGate(
-            max_speed_mps=max_ball_speed_mps,
-            max_innovation_m=max_motion_innovation_m,
-            max_prediction_sec=max_prediction_sec,
-        )
 
         self.kf = KalmanFilter3D(dt=1.0 / 60.0)
         self.position_filters = [
@@ -329,16 +293,8 @@ class BallPublisher(Node):
         self.get_logger().info(
             f"球心方法: {self.position_method}, "
             f"球半径: {self.ball_radius * 1000.0:.1f} mm, "
-            f"One Euro: {'开启' if self.use_one_euro_filter else '关闭'}, "
-            f"运动门控: {'开启' if self.use_motion_gate else '关闭'}"
+            f"One Euro: {'开启' if self.use_one_euro_filter else '关闭'}"
         )
-        if self.use_motion_gate:
-            self.get_logger().info(
-                "运动门控阈值: "
-                f"speed<={max_ball_speed_mps:.2f}m/s, "
-                f"innovation<={max_motion_innovation_m:.3f}m, "
-                f"prediction<={max_prediction_sec:.3f}s"
-            )
 
         # 每秒统计一次成功获取图像的帧率和模型纯推理帧率。
         self.fps_window_start = time.perf_counter()
@@ -560,87 +516,29 @@ class BallPublisher(Node):
                 capture_time_sec = (
                     capture_time.sec + capture_time.nanosec * 1e-9
                 )
-                measurement_accepted = True
                 center = raw_center.copy()
-                published_method = center_method
-                if self.use_motion_gate:
-                    motion_decision = self.motion_gate.update(
-                        raw_center, capture_time_sec
-                    )
-                    measurement_accepted = motion_decision.accepted
-                    center = motion_decision.output_position
-                    if not motion_decision.accepted:
-                        self.motion_rejection_count += 1
-                        published_method = (
-                            "motion-prediction"
-                            if motion_decision.predicted
-                            else "motion-rejected"
-                        )
-                        if (
-                            self.motion_rejection_count <= 3
-                            or self.motion_rejection_count % 20 == 0
-                        ):
-                            action = (
-                                "发布短时预测"
-                                if motion_decision.predicted
-                                else "停止发布"
-                            )
-                            self.get_logger().warn(
-                                "拒绝球心极值: "
-                                f"reason={motion_decision.reason}, "
-                                "speed="
-                                f"{motion_decision.apparent_speed_mps:.2f}m/s, "
-                                "innovation="
-                                f"{motion_decision.innovation_m:.3f}m; "
-                                f"{action}"
-                            )
+                self.latest_center_method = center_method
+                raw_center_x, raw_center_y, raw_center_z = raw_center.tolist()
+                raw_center_msg = PointStamped()
+                raw_center_msg.header.stamp = capture_time
+                raw_center_msg.header.frame_id = "camera_color_optical_frame"
+                raw_center_msg.point.x = raw_center_x
+                raw_center_msg.point.y = raw_center_y
+                raw_center_msg.point.z = raw_center_z
+                self.raw_center_pub.publish(raw_center_msg)
 
-                if measurement_accepted:
-                    self.latest_center_method = center_method
-                    raw_center_x, raw_center_y, raw_center_z = (
-                        raw_center.tolist()
-                    )
-                    raw_center_msg = PointStamped()
-                    raw_center_msg.header.stamp = capture_time
-                    raw_center_msg.header.frame_id = (
-                        "camera_color_optical_frame"
-                    )
-                    raw_center_msg.point.x = raw_center_x
-                    raw_center_msg.point.y = raw_center_y
-                    raw_center_msg.point.z = raw_center_z
-                    self.raw_center_pub.publish(raw_center_msg)
+                if surface_point is not None:
+                    surf_msg = PointStamped()
+                    surf_msg.header.stamp = capture_time
+                    surf_msg.header.frame_id = "camera_color_optical_frame"
+                    (
+                        surf_msg.point.x,
+                        surf_msg.point.y,
+                        surf_msg.point.z,
+                    ) = surface_point.tolist()
+                    self.surf_pub.publish(surf_msg)
 
-                    # 表面点来自相同掩码，只有球心通过门控时才发布，避免
-                    # /ball_surface 保留同一错误检测产生的极值。
-                    if surface_point is not None:
-                        surf_msg = PointStamped()
-                        surf_msg.header.stamp = capture_time
-                        surf_msg.header.frame_id = (
-                            "camera_color_optical_frame"
-                        )
-                        (
-                            surf_msg.point.x,
-                            surf_msg.point.y,
-                            surf_msg.point.z,
-                        ) = surface_point.tolist()
-                        self.surf_pub.publish(surf_msg)
-
-                if center is None:
-                    cv2.putText(
-                        display_image,
-                        "Motion outlier - publish stopped",
-                        (20, 35),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.65,
-                        (0, 0, 255),
-                        2,
-                    )
-                    center_method = published_method
-                    continue_publishing = False
-                else:
-                    continue_publishing = True
-
-                if continue_publishing and self.use_one_euro_filter:
+                if self.use_one_euro_filter:
                     center = np.array(
                         [
                             position_filter.filter(value, capture_time_sec)
@@ -650,62 +548,53 @@ class BallPublisher(Node):
                         ],
                         dtype=np.float64,
                     )
-                if continue_publishing:
-                    center_x, center_y, center_z = center.tolist()
+                center_x, center_y, center_z = center.tolist()
 
-                    center_msg = PointStamped()
-                    center_msg.header.stamp = capture_time
-                    center_msg.header.frame_id = "camera_color_optical_frame"
-                    center_msg.point.x = center_x
-                    center_msg.point.y = center_y
-                    center_msg.point.z = center_z
-                    self.center_pub.publish(center_msg)
+                center_msg = PointStamped()
+                center_msg.header.stamp = capture_time
+                center_msg.header.frame_id = "camera_color_optical_frame"
+                center_msg.point.x = center_x
+                center_msg.point.y = center_y
+                center_msg.point.z = center_z
+                self.center_pub.publish(center_msg)
 
-                    if (
-                        measurement_accepted
-                        and self.tracker is not None
-                        and surface_point is not None
-                    ):
-                        self.tracker.update(
-                            *surface_point.tolist(),
-                            center_x,
-                            center_y,
-                            center_z,
-                        )
+                if self.tracker is not None and surface_point is not None:
+                    self.tracker.update(
+                        *surface_point.tolist(),
+                        center_x,
+                        center_y,
+                        center_z,
+                    )
 
-                    annotated = display_image
-                    cv2.circle(annotated, (u, v), 5, (0, 0, 255), -1)
+                annotated = display_image
+                cv2.circle(annotated, (u, v), 5, (0, 0, 255), -1)
+                cv2.putText(
+                    annotated,
+                    f"Center Z: {center_z * 1000.0:.1f}mm "
+                    f"({center_method})",
+                    (max(5, u - 80), max(25, v - 15)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 0),
+                    2,
+                )
+                fit_rmse_mm = self.latest_silhouette_fit_rmse_mm
+                if fit_rmse_mm is None:
+                    fit_rmse_mm = self.latest_sphere_fit_rmse_mm
+                if fit_rmse_mm is not None:
                     cv2.putText(
                         annotated,
-                        f"Center Z: {center_z * 1000.0:.1f}mm "
-                        f"({published_method})",
-                        (max(5, u - 80), max(25, v - 15)),
+                        f"Fit RMSE: {fit_rmse_mm:.2f}mm",
+                        (
+                            max(5, u - 80),
+                            min(annotated.shape[0] - 10, v + 15),
+                        ),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.55,
-                        (
-                            (0, 255, 0)
-                            if measurement_accepted
-                            else (0, 165, 255)
-                        ),
+                        (0, 255, 255),
                         2,
                     )
-                    fit_rmse_mm = self.latest_silhouette_fit_rmse_mm
-                    if fit_rmse_mm is None:
-                        fit_rmse_mm = self.latest_sphere_fit_rmse_mm
-                    if fit_rmse_mm is not None:
-                        cv2.putText(
-                            annotated,
-                            f"Fit RMSE: {fit_rmse_mm:.2f}mm",
-                            (
-                                max(5, u - 80),
-                                min(annotated.shape[0] - 10, v + 15),
-                            ),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.55,
-                            (0, 255, 255),
-                            2,
-                        )
-                    display_image = annotated
+                display_image = annotated
 
         depth_display = make_depth_display(
             depth_image,
@@ -742,10 +631,6 @@ def main(args=None):
         position_method=cli_args.position_method,
         ball_radius_m=cli_args.ball_radius_m,
         use_one_euro_filter=cli_args.use_one_euro_filter,
-        use_motion_gate=not cli_args.disable_motion_gate,
-        max_ball_speed_mps=cli_args.max_ball_speed_mps,
-        max_motion_innovation_m=cli_args.max_motion_innovation_m,
-        max_prediction_sec=cli_args.max_prediction_sec,
     )
     try:
         rclpy.spin(node)
