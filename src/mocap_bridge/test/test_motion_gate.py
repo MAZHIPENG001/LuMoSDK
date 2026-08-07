@@ -53,6 +53,20 @@ def test_prediction_stops_after_short_rejection_window():
     assert long.output_position is None
 
 
+def test_default_innovation_limit_rejects_sub_eight_mps_jump():
+    gate = BallMotionGate()
+    gate.update(np.array([0.0, 0.0, 2.0]), 0.0)
+    gate.update(np.array([0.1, 0.0, 2.0]), 0.1)
+
+    decision = gate.update(np.array([0.45, 0.0, 2.0]), 0.2)
+
+    assert decision.apparent_speed_mps < 8.0
+    assert decision.innovation_m > 0.25
+    assert not decision.accepted
+    assert decision.predicted
+    assert decision.reason == "innovation"
+
+
 def test_detection_gap_reinitializes_gate():
     gate = BallMotionGate(reset_gap_sec=0.5)
     gate.update(np.array([0.0, 0.0, 2.0]), 0.0)

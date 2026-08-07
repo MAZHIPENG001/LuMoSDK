@@ -32,7 +32,7 @@ class BallMotionGate:
         self,
         *,
         max_speed_mps=8.0,
-        max_innovation_m=1.0,
+        max_innovation_m=0.25,
         max_prediction_sec=0.25,
         reset_gap_sec=0.5,
         velocity_smoothing=0.6,

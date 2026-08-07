@@ -367,22 +367,52 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
 `--mocap-pose-direction rigid_to_world`，或使用 ROS 参数
 `-p mocap_pose_direction:=rigid_to_world`。
 
-如果后续任务专门使用 RGB-D 球心，且独立验证发现稳定的系统偏差，可再使用
-`scripts/refine_ball_extrinsic.py` 拟合“球心检测有效外参”。它不是基础手眼标定的替代品，输出也可能吸收
-深度和球心算法的系统误差。至少需要 3 组、推荐 6 组以上不同方向和距离的数据，并应保留额外数据做独立
-验证。为避免把时间偏移吸收到外参中，推荐每组记录时让球和相机都保持静止；不要用尚未校正时间戳的运动
-轨迹做外参修正：
+### 使用球心数据修正标定文件
+
+`scripts/refine_ball_extrinsic.py` 用于修正标定文件中的相机到动捕刚体外参。它读取原始手眼标定文件，以及
+多组 `center_raw.csv` 视觉球心和 `mocap.csv` 动捕球心对应数据，重新拟合
+`selected.T_rigid_camera`，并生成一个新的“球心检测有效外参”JSON 文件。
+
+需要明确区分以下输入和输出：
+
+- `--input` 是原始 ChArUco 手眼标定文件，只读取，不会被修改或覆盖。
+- `--output` 是修正后生成的新标定文件。后续验证或坐标变换应显式使用这个新文件。
+- 修正结果会同时吸收基础手眼外参残差，以及轮廓、深度和球心恢复算法中可重复的系统偏差。因此它适合
+  专门使用当前相机、分辨率、检测模型和球心算法的任务，但不能替代基础 ChArUco 手眼标定。
+
+至少需要 3 组、推荐 6 组以上不同画面方向和距离的数据，并应另留数据做独立验证。每组采集时必须让球和
+相机都保持静止，以免把时间延迟和运动误差错误地拟合进外参。每个输入目录必须包含 `center_raw.csv` 和
+`mocap.csv`。例如，修正当前 ZED 标定文件：
 
 ```bash
 python3 src/mocap_bridge/scripts/refine_ball_extrinsic.py \
-  --dirs <数据目录1> <数据目录2> <数据目录3> \
-  --input src/mocap_bridge/scripts/detection/calib/<相机类型_时间戳>/handeye_calibration.json \
-  --output src/mocap_bridge/scripts/detection/calib/handeye_ball_refined.json
+  --dirs \
+    src/mocap_bridge/scripts/data/s1 \
+    src/mocap_bridge/scripts/data/s2 \
+    src/mocap_bridge/scripts/data/s3 \
+    src/mocap_bridge/scripts/data/s4 \
+    src/mocap_bridge/scripts/data/s5 \
+    src/mocap_bridge/scripts/data/s6 \
+  --input \
+    src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json \
+  --output \
+    src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_ball_refined.json
 ```
 
-每个输入目录必须包含 `center_raw.csv` 和 `mocap.csv`。
 相机刚体 ID 默认从 `--input` 标定文件的 `rigid_id` 读取；需要覆盖时使用
 `--rigid-id <ID>`。
+
+生成后先用未参与修正的静止数据验证新文件：
+
+```bash
+python3 src/mocap_bridge/scripts/plot_auto_calib.py \
+  --dir src/mocap_bridge/scripts/data/<独立验证数据> \
+  --handeye-calib \
+    src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_ball_refined.json
+```
+
+如果更换相机、分辨率、镜头参数、检测模型、球半径、球心算法，或者相机与刚体的安装关系，应重新完成基础
+手眼标定和球心有效外参修正，不能继续沿用旧的修正文件。
 
 ## 常见问题
 

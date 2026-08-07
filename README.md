@@ -127,11 +127,12 @@ python3 eval_ros.py \
 ```
 
 如需对照原来的深度球面拟合，可使用 `--position-method depth`。轮廓法失败时也会自动回退到深度法，预览中
-会显示本帧实际使用的 `silhouette`、`depth-sphere` 或 `depth-ray`。默认发布未滤波球心，便于评估运动目标的
-真实误差；确实需要平滑输出时可加 `--one-euro-filter`，此时会对 XYZ 三轴使用相同滤波策略。
+会显示本帧实际使用的 `silhouette`、`depth-sphere` 或 `depth-ray`。`/ball_center` 默认启用 One Euro
+自适应滤波，在静止时抑制帧间噪声、运动时自动提高响应；`/ball_center_raw` 保留通过质量门控但未经平滑的
+球心，便于评估检测本身。需要对照未滤波发布行为时可加 `--disable-one-euro-filter`。
 
-检测端默认开启运动一致性门控，阈值为最大表观速度 `8 m/s`、相对匀速预测最大偏差 `1.0 m`。正常测量不会
-被平滑或修改；孤立极值不会发布到 `/ball_center_raw` 和 `/ball_surface`，`/ball_center` 最多使用 `0.25 s`
+检测端默认开启运动一致性门控，阈值为最大表观速度 `8 m/s`、相对匀速预测最大偏差 `0.25 m`。运动门控
+不会修改正常测量；孤立极值不会发布到 `/ball_center_raw` 和 `/ball_surface`，`/ball_center` 最多使用 `0.25 s`
 匀速预测维持连续，之后停止发布而不会输出错误位置。预览和终端会分别显示 `motion-prediction` 和拒绝原因。
 如果目标实际速度超过默认值，应按真实速度调大阈值，例如：
 
@@ -139,7 +140,7 @@ python3 eval_ros.py \
 python3 eval_ros.py \
   --camera zed \
   --max-ball-speed-mps 12 \
-  --max-motion-innovation-m 1.2 \
+  --max-motion-innovation-m 0.35 \
   --max-prediction-sec 0.25
 ```
 

@@ -47,11 +47,20 @@ def parse_args(args=None):
         default=0.110,
         help="球的实测物理半径，单位米（默认：0.110）",
     )
-    parser.add_argument(
+    filter_group = parser.add_mutually_exclusive_group()
+    filter_group.add_argument(
         "--one-euro-filter",
+        dest="use_one_euro_filter",
         action="store_true",
-        help="对发布球心的 XYZ 同时启用 One Euro 滤波（默认不滤波）",
+        help="对发布到 /ball_center 的球心启用 One Euro 滤波（默认开启）",
     )
+    filter_group.add_argument(
+        "--disable-one-euro-filter",
+        dest="use_one_euro_filter",
+        action="store_false",
+        help="关闭 /ball_center 的 One Euro 滤波",
+    )
+    parser.set_defaults(use_one_euro_filter=True)
     parser.add_argument(
         "--disable-motion-gate",
         action="store_true",
@@ -66,8 +75,8 @@ def parse_args(args=None):
     parser.add_argument(
         "--max-motion-innovation-m",
         type=float,
-        default=1.0,
-        help="测量与匀速预测的最大偏差，单位米（默认：1.0）",
+        default=0.25,
+        help="测量与匀速预测的最大偏差，单位米（默认：0.25）",
     )
     parser.add_argument(
         "--max-prediction-sec",
@@ -262,10 +271,10 @@ class BallPublisher(Node):
         camera_type="realsense",
         position_method="silhouette",
         ball_radius_m=0.110,
-        use_one_euro_filter=False,
+        use_one_euro_filter=True,
         use_motion_gate=True,
         max_ball_speed_mps=8.0,
-        max_motion_innovation_m=1.0,
+        max_motion_innovation_m=0.25,
         max_prediction_sec=0.25,
     ):
         super().__init__('ball_publisher')
@@ -732,7 +741,7 @@ def main(args=None):
         camera_type=cli_args.camera,
         position_method=cli_args.position_method,
         ball_radius_m=cli_args.ball_radius_m,
-        use_one_euro_filter=cli_args.one_euro_filter,
+        use_one_euro_filter=cli_args.use_one_euro_filter,
         use_motion_gate=not cli_args.disable_motion_gate,
         max_ball_speed_mps=cli_args.max_ball_speed_mps,
         max_motion_innovation_m=cli_args.max_motion_innovation_m,
