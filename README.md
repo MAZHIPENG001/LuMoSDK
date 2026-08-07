@@ -158,7 +158,11 @@ python3 src/mocap_bridge/scripts/plot_auto_calib.py \
   --handeye-calib \
   src/mocap_bridge/scripts/detection/calib/calib_realsense/handeye_ball_refined_ralsensed435.json
 ```
-
+```bash
+python3 src/mocap_bridge/scripts/plot_auto_calib.py \
+  --handeye-calib \
+  src/mocap_bridge/scripts/detection/calib/zed_20260806_182206/handeye_calibration.json
+```
 ## 其他工具
 
 项目内其他工具的详细使用说明如下：

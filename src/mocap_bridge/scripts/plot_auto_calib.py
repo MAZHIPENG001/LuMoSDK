@@ -38,7 +38,7 @@ def set_axes_equal_3d(ax, points):
     ax.set_zlim(axis_center[2] - half_range, axis_center[2] + half_range)
 def main():
     # 配置参数解析
-    base_dir = ("/home/ma/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data")
+    base_dir = ("/home/mirrorme/GithubDoc/LuMoSDK/src/mocap_bridge/scripts/data")
     parser = argparse.ArgumentParser(description="动捕与视觉数据对齐与可视化工具")
     parser.add_argument("--dir",type=str,default=None,help="数据文件夹路径。",)
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -80,12 +80,12 @@ def main():
     center_df.sort_values("time", inplace=True)
     mocap_df.sort_values("time", inplace=True)
 
-    # Rigid 5 是无反光贴纸红球的球心；Rigid 4 是相机刚体;marker_id 1 是标准球
-    # ball_gt = mocap_df[(mocap_df["rigid_id"] == 5) & (mocap_df["is_track"] == 1)].dropna(axis=1, how="all")
+    # Rigid 5 是zed相机刚体；marker_id 1 是标准球
+    # ball_gt = mocap_df[(mocap_df["rigid_id"] == 6) & (mocap_df["is_track"] == 1)].dropna(axis=1, how="all")
     # gt_keys = ["rx", "ry", "rz"] 
     ball_gt = mocap_df[mocap_df['marker_id'] == 1].dropna(axis=1, how='all')
     gt_keys = ["x", "y", "z"] 
-    cam_pose = mocap_df[(mocap_df["rigid_id"] == 4) & (mocap_df["is_track"] == 1)].dropna(axis=1, how="all")
+    cam_pose = mocap_df[(mocap_df["rigid_id"] == 5) & (mocap_df["is_track"] == 1)].dropna(axis=1, how="all")
 
     if center_df.empty or ball_gt.empty or cam_pose.empty:
         print("错误: center、Rigid 5 球心或 Rigid 4 相机位姿数据为空")
@@ -154,10 +154,10 @@ def main():
         handeye_data = json.load(f)
 
     rigid_id = handeye_data.get("rigid_id")
-    if rigid_id is not None and int(rigid_id) != 4:
+    if rigid_id is not None and int(rigid_id) != 5:
         raise ValueError(
             f"标定文件对应 rigid_id={rigid_id}，"
-            "但 plot_auto_calib.py 当前使用的是 rigid_id=4"
+            "但 plot_auto_calib.py 当前使用的是 rigid_id=5"
         )
 
     selected = handeye_data["selected"]
