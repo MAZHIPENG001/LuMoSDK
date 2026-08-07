@@ -730,7 +730,7 @@ class BallPublisher(Node):
         cv2.destroyAllWindows()
         if self.tracker is not None:
             self.get_logger().info("生成轨迹图...")
-            self.tracker.save_and_plot()
+            # self.tracker.save_and_plot()
         super().destroy_node()
 
 
