@@ -915,11 +915,13 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     selected_device = supported_devices[0]
+    max_detection_depth_m = 2.0
     camera = ZEDCamera(
         resolution=sl.RESOLUTION.SVGA,
         fps=120,
         serial_number=selected_device["serial_number"],
     )
+    camera.init_params.depth_maximum_distance = max_detection_depth_m
     if not camera.start():
         print("ZED X 启动失败，程序退出。")
         raise SystemExit(1)
@@ -966,10 +968,14 @@ if __name__ == "__main__":
                 cv2.LINE_AA,
             )
 
-            valid_mask = np.isfinite(depth_image) & (depth_image > 0.0)
+            valid_mask = (
+                np.isfinite(depth_image)
+                & (depth_image > 0.0)
+                & (depth_image <= max_detection_depth_m)
+            )
             valid_depth = np.where(valid_mask, depth_image, 0.0)
             depth_display = np.clip(
-                valid_depth / 3.0 * 255.0, 0, 255
+                valid_depth / max_detection_depth_m * 255.0, 0, 255
             ).astype(np.uint8)
             depth_display = cv2.applyColorMap(
                 depth_display, cv2.COLORMAP_TURBO
