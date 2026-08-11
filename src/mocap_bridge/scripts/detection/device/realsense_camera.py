@@ -511,34 +511,49 @@ def list_camera_framerates(serial_number=None):
 
 
 if __name__ == "__main__":
-    import time
     serial_number()
     list_camera_framerates()
+    max_detection_depth_m = 2.0
     camera1 = RealSenseCamera(width=640, height=480)
     # 加载相机
     # camera1 = RealSenseCamera(width=1280, height=720, serial_number="233622070932")
     # camera2 = RealSen6seCamera(width=640, height=480, serial_number="938422074612")
-    # while not camera2.start() and not camera1.start():
-    #     print(f"\33[93m等待相机启动...\33[0m")
-    #     time.sleep(0.2)  # 避免过度占用 CPU
-    while True:
-        color_image1, depth_image1 = camera1.get_images()
-        # color_image2, depth_image2 = camera2.get_images()
+    if not camera1.start():
+        print("RealSense 启动失败，程序退出。")
+        camera1.stop()
+        raise SystemExit(1)
 
-        if color_image1 is None or depth_image1 is None:
-            continue
+    try:
+        while True:
+            color_image1, depth_image1 = camera1.get_images()
+            if color_image1 is None or depth_image1 is None:
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+                continue
 
-        # 1. 将16位深度图映射到8位 (0-255)
-        # alpha 缩放因子：0.03 左右通常能让 0-3米 范围内的物体有较好的对比度
-        depth_display = cv2.convertScaleAbs(depth_image1, alpha=0.03)
+            depth_m = (
+                depth_image1.astype(np.float32) * camera1.depth_scale
+            )
+            valid_mask = (
+                np.isfinite(depth_m)
+                & (depth_m > 0.0)
+                & (depth_m <= max_detection_depth_m)
+            )
+            valid_depth = np.where(valid_mask, depth_m, 0.0)
+            depth_display = np.clip(
+                valid_depth / max_detection_depth_m * 255.0, 0, 255
+            ).astype(np.uint8)
+            depth_display = cv2.applyColorMap(
+                depth_display, cv2.COLORMAP_TURBO
+            )
+            depth_display[~valid_mask] = 0
 
-        # 2. 应用伪彩色（COLORMAP_JET 效果类似于常用的红色表示近，蓝色表示远）
-        # depth_colormap = cv2.applyColorMap(depth_display, cv2.COLORMAP_JET)
-        # 显示图像
-        cv2.imshow('RealSense - Color1', color_image1)
-        cv2.imshow('RealSense - Depth1', depth_display)
-        # cv2.imshow('RealSense - Color2', color_image2)
-
-        # 按'q'退出
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            cv2.imshow("RealSense - Color", color_image1)
+            cv2.imshow("RealSense - Colorized Depth", depth_display)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cv2.destroyAllWindows()
+        camera1.stop()
