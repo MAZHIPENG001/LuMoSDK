@@ -966,14 +966,17 @@ if __name__ == "__main__":
                 cv2.LINE_AA,
             )
 
-            valid_depth = np.nan_to_num(
-                depth_image, nan=0.0, posinf=0.0, neginf=0.0
-            )
+            valid_mask = np.isfinite(depth_image) & (depth_image > 0.0)
+            valid_depth = np.where(valid_mask, depth_image, 0.0)
             depth_display = np.clip(
                 valid_depth / 3.0 * 255.0, 0, 255
             ).astype(np.uint8)
+            depth_display = cv2.applyColorMap(
+                depth_display, cv2.COLORMAP_TURBO
+            )
+            depth_display[~valid_mask] = 0
             cv2.imshow("ZED - Color", color_image)
-            cv2.imshow("ZED - Depth", depth_display)
+            cv2.imshow("ZED - Colorized Depth", depth_display)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
     except KeyboardInterrupt:
